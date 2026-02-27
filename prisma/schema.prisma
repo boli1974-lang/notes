@@ -1,0 +1,86 @@
+// Prisma schema for Notes MVP. Phase 1: nullable userId for future multi-user.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Note {
+  id                String    @id @default(uuid()) @db.Uuid
+  title             String?   @db.VarChar(120)
+  content           String    @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+  userId            String?   @db.Uuid
+  noteTags          NoteTag[]
+  reviewEvents      ReviewEvent[]
+  reviewBatchItems  ReviewBatchItem[]
+
+  @@index([userId])
+  @@index([deletedAt])
+  @@index([createdAt])
+}
+
+model Tag {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(30)
+  createdAt DateTime @default(now())
+  userId    String?  @db.Uuid
+  noteTags  NoteTag[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model NoteTag {
+  noteId String @db.Uuid
+  tagId  String @db.Uuid
+  note   Note   @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, tagId])
+  @@index([tagId])
+  @@index([noteId])
+}
+
+model ReviewEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  noteId     String   @db.Uuid
+  reviewedAt DateTime @default(now())
+  userId     String?  @db.Uuid
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, reviewedAt])
+  @@index([userId, reviewedAt])
+}
+
+model ReviewBatch {
+  id         String   @id @default(uuid()) @db.Uuid
+  reviewDate DateTime @db.Date
+  userId     String?  @db.Uuid
+  createdAt  DateTime @default(now())
+  items      ReviewBatchItem[]
+ 
+  @@unique([userId, reviewDate])
+  @@index([userId])
+}
+
+model ReviewBatchItem {
+  id       String @id @default(uuid()) @db.Uuid
+  batchId  String @db.Uuid
+  noteId   String @db.Uuid
+  position Int
+
+  batch ReviewBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  note  Note       @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, noteId])      // same note can't appear twice in a batch
+  @@unique([batchId, position])    // no two items share the same position
+  @@index([noteId])
+}
