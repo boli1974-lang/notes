@@ -94,3 +94,139 @@
 - Add tests for user-scoped review batch behavior (`userId` provided vs omitted).
 - Add tag/review repository completeness and a cohesive `noteService` orchestration with tags.
 - Add API/server-actions layer that calls services only (no direct repo from routes/components).
+
+## Phase 3 Implementation
+
+## 2026-03-01
+
+### Technical Summary (what changed, which files)
+- Added thin API routes for notes and review using service calls only:
+  - `app/api/notes/route.ts`
+  - `app/api/notes/[id]/route.ts`
+  - `app/api/review/today/route.ts`
+  - `app/api/review/mark-reviewed/route.ts`
+- Added API smoke script:
+  - `scripts/smoke-api.ts`
+- Added npm script:
+  - `package.json` → `smoke:api`
+
+### Architectural Rationale
+- Kept API handlers as request/response + validation boundaries.
+- Kept business logic in services; no Prisma calls in route handlers.
+- Added explicit 4xx validation to reject bad payloads without 500s.
+
+### List of files changed
+- `app/api/notes/route.ts`
+- `app/api/notes/[id]/route.ts`
+- `app/api/review/today/route.ts`
+- `app/api/review/mark-reviewed/route.ts`
+- `scripts/smoke-api.ts`
+- `package.json`
+- `package-lock.json`
+
+### Invariants involved
+- API routes call services only (no direct DB access in routes).
+- Default note reads continue to exclude soft-deleted records.
+- Review batch remains stable for same day and does not reshuffle after mark-reviewed.
+- Invalid client input returns 4xx, not 500.
+
+### What I Should Understand Conceptually
+- API layer should be thin: parse/validate input, call service, shape response.
+- Services remain the domain boundary; repositories remain persistence-only.
+- Reliable API behavior depends on explicit input contracts and deterministic error status codes.
+
+### What Would Break If We Changed X
+- If routes call Prisma directly, layering/testability and maintainability degrade.
+- If 4xx validation is removed, invalid client requests can leak into 500 errors.
+- If review API bypasses `reviewService`, stable batch invariants can break.
+
+### What To Improve Next Iteration
+- Add tag API routes once tag service/repository methods are implemented.
+- Standardize API error schema across all routes (`code` + `message`).
+- Add lightweight API contract tests for edge validation cases.
+
+## Phase 3.1 Implementation
+
+## 2026-03-01
+
+### Technical Summary (what changed, which files)
+- Implemented tag repository methods in `lib/repositories/tagsRepo.ts` (create/find/list/attach/detach + explicit hard-delete helper).
+- Added `lib/services/tagService.ts` for tag name normalization and attach orchestration (create-or-get then attach).
+- Added tag API routes:
+  - `app/api/tags/route.ts` (GET, POST)
+  - `app/api/notes/[id]/tags/route.ts` (POST attach existing or create-and-attach)
+  - `app/api/notes/[id]/tags/[tagId]/route.ts` (DELETE detach)
+- Extended `scripts/smoke-api.ts` to cover tag API validation and flows.
+
+### Architectural Rationale
+- API routes remain thin request/validation boundaries and call services only.
+- Services hold orchestration and normalization logic.
+- Repositories remain persistence-only and deterministic.
+
+### List of files changed
+- `lib/repositories/tagsRepo.ts`
+- `lib/services/tagService.ts`
+- `app/api/tags/route.ts`
+- `app/api/notes/[id]/tags/route.ts`
+- `app/api/notes/[id]/tags/[tagId]/route.ts`
+- `scripts/smoke-api.ts`
+- `package.json`
+- `package-lock.json`
+
+### Invariants involved
+- No direct Prisma usage in routes/services outside repositories.
+- Tag names are normalized before persistence (`trim + lowercase`).
+- Optional `userId` filtering remains consistent for multi-user readiness.
+- API validation rejects invalid payloads with 4xx.
+
+### What I Should Understand Conceptually
+- Tag operations are modeled as service orchestration over `Tag` + `NoteTag`.
+- Attach route supports both existing-tag and create-on-the-fly user flows.
+- Nested note-tag routes keep API semantics aligned with “tags of a note.”
+
+### What Would Break If We Changed X
+- If normalization is removed, duplicate semantic tags (`Work` vs `work`) can proliferate.
+- If routes bypass services, logic duplication and inconsistency risks increase.
+- If user scoping is dropped, future auth migration becomes harder.
+
+### What To Improve Next Iteration
+- Add optional `includeCounts` support for tag list response.
+- Add note listing by `tagId` filter endpoint support.
+- Consolidate API error payload to include stable error codes.
+
+## Phase 3.2 Implementation
+
+## 2026-03-02
+
+### Technical Summary (what changed, which files)
+- Extended `scripts/smoke-api.ts` with explicit invalid-input API checks:
+  - invalid note id path
+  - invalid attach-tag payload
+  - invalid detach-tag path
+  - invalid mark-reviewed payload
+- Kept runtime endpoint behavior unchanged; this iteration focuses on API contract verification depth.
+
+### Architectural Rationale
+- Strengthened Phase 3 error-handling strategy using smoke-level contract checks instead of adding new runtime pathways.
+- Preserved thin route boundaries and service/repository layering while improving confidence in 4xx behavior.
+
+### List of files changed
+- `scripts/smoke-api.ts`
+- `docs/build-log.md`
+
+### Invariants involved
+- Invalid client inputs return 4xx (not 500).
+- Routes remain service-driven; no direct Prisma usage in routes.
+- Existing Notes/Tags/Review functional invariants remain intact.
+
+### What I Should Understand Conceptually
+- API quality is not only “happy path works”; it also requires predictable error semantics.
+- Smoke tests can enforce behavior contracts without heavy test frameworks.
+
+### What Would Break If We Changed X
+- If validation regresses, invalid payloads may leak into 500s and hurt API reliability.
+- If API smoke coverage shrinks, future regressions in input handling can slip through.
+
+### What To Improve Next Iteration
+- Add shared helper utilities for route validation/error mapping to reduce repeated code.
+- Add API contract tests for not-found and conflict cases (beyond payload validation).
