@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "smoke:note-repo": "npx tsx scripts/smoke-note-repo.ts",
+    "smoke:note-service": "npx tsx scripts/smoke-note-service.ts",
+    "smoke:review-service": "npx tsx scripts/smoke-review-service.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",

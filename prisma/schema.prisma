@@ -52,11 +52,13 @@ model ReviewEvent {
   id         String   @id @default(uuid()) @db.Uuid
   noteId     String   @db.Uuid
   reviewedAt DateTime @default(now())
+  reviewBatchDate DateTime @db.Date
   userId     String?  @db.Uuid
 
   note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
 
   @@index([noteId, reviewedAt])
+  @@index([userId, reviewBatchDate])
   @@index([userId, reviewedAt])
 }
 
