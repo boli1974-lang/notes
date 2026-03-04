@@ -22,6 +22,10 @@ function badRequest(message: string): NextResponse {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function GET(request: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(request.url);
@@ -54,10 +58,15 @@ export async function GET(request: Request): Promise<NextResponse> {
     if (includeDeletedRaw && includeDeleted === undefined) {
       return badRequest("includeDeleted must be either 'true' or 'false'.");
     }
+    const tagId = searchParams.get("tagId") ?? undefined;
+    if (tagId && !isUuid(tagId)) {
+      return badRequest("tagId must be a valid UUID.");
+    }
 
     const notes = await listNotes({
       userId: searchParams.get("userId") ?? undefined,
       search: searchParams.get("search") ?? undefined,
+      tagId,
       sortBy,
       sortOrder,
       take,

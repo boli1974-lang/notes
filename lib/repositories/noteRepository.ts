@@ -14,6 +14,7 @@ export type UpdateNoteInput = {
 export type ListNotesOptions = {
   userId?: string;
   includeDeleted?: boolean;
+  tagId?: string;
   take?: number;
   skip?: number;
   search?: string;
@@ -65,6 +66,15 @@ export async function listNotes(options: ListNotesOptions = {}): Promise<Note[]>
   const where: Prisma.NoteWhereInput = withOptionalUserFilter(
     {
       ...(options.includeDeleted ? {} : { deletedAt: null }),
+      ...(options.tagId
+        ? {
+            noteTags: {
+              some: {
+                tagId: options.tagId,
+              },
+            },
+          }
+        : {}),
       ...(options.search
         ? {
             OR: [

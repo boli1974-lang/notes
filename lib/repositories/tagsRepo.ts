@@ -2,6 +2,7 @@ import type { NoteTag, Tag } from "@prisma/client";
 import { prisma } from "@/lib/db";
 
 type OptionalUserWhere = { userId?: string | null };
+export type TagWithCount = Tag & { noteCount: number };
 
 function withOptionalUserWhere(userId?: string): OptionalUserWhere {
   return userId ? { userId } : {};
@@ -39,6 +40,51 @@ export async function findManyTags(userId?: string): Promise<Tag[]> {
     where: withOptionalUserWhere(userId),
     orderBy: { createdAt: "desc" },
   });
+}
+
+export async function findManyTagsWithCounts(userId?: string): Promise<TagWithCount[]> {
+  const tags = await findManyTags(userId);
+  if (tags.length === 0) {
+    return [];
+  }
+
+  const counts = await prisma.noteTag.groupBy({
+    by: ["tagId"],
+    where: {
+      tagId: { in: tags.map((tag) => tag.id) },
+      note: {
+        deletedAt: null,
+      },
+    },
+    _count: {
+      _all: true,
+    },
+  });
+
+  const countByTagId = new Map(counts.map((item) => [item.tagId, item._count._all]));
+  return tags.map((tag) => ({
+    ...tag,
+    noteCount: countByTagId.get(tag.id) ?? 0,
+  }));
+}
+
+export async function findTagsByNoteId(noteId: string, userId?: string): Promise<Tag[]> {
+  const noteTags = await prisma.noteTag.findMany({
+    where: {
+      noteId,
+      ...(userId ? { tag: { userId } } : {}),
+    },
+    include: {
+      tag: true,
+    },
+    orderBy: {
+      tag: {
+        createdAt: "desc",
+      },
+    },
+  });
+
+  return noteTags.map((noteTag) => noteTag.tag);
 }
 
 export async function attachTagToNote(noteId: string, tagId: string): Promise<NoteTag> {

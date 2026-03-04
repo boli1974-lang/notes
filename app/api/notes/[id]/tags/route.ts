@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { attachTagToNote } from "@/lib/services/tagService";
+import { attachTagToNote, listTagsForNote } from "@/lib/services/tagService";
 
 type AttachTagBody = {
   tagId?: unknown;
@@ -74,5 +74,25 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
       }
     }
     return NextResponse.json({ error: "Failed to attach tag to note." }, { status: 500 });
+  }
+}
+
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
+  try {
+    const { id: noteId } = await context.params;
+    if (!isUuid(noteId)) {
+      return badRequest("id must be a valid UUID.");
+    }
+
+    const { searchParams } = new URL(request.url);
+    const userId = searchParams.get("userId") ?? undefined;
+
+    const tags = await listTagsForNote(noteId, userId);
+    return NextResponse.json({ data: tags });
+  } catch (error) {
+    if (error instanceof Error && error.message === "NOTE_NOT_FOUND") {
+      return NextResponse.json({ error: "Note not found." }, { status: 404 });
+    }
+    return NextResponse.json({ error: "Failed to list note tags." }, { status: 500 });
   }
 }

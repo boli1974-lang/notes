@@ -230,3 +230,143 @@
 ### What To Improve Next Iteration
 - Add shared helper utilities for route validation/error mapping to reduce repeated code.
 - Add API contract tests for not-found and conflict cases (beyond payload validation).
+
+## Phase 4 Implementation
+
+## 2026-03-02
+
+### Technical Summary (what changed, which files)
+- Replaced UI placeholders with functional pages:
+  - `app/notes/page.tsx` (quick add, list, edit, soft-delete, tags attach/detach, search, sort)
+  - `app/review/page.tsx` (daily batch focus mode, next/prev, mark reviewed, edit, soft-delete, progress)
+- Added one API capability needed by notes UI:
+  - `app/api/notes/[id]/tags/route.ts` now supports `GET` to list tags for a note.
+- Extended tag data access support:
+  - `lib/repositories/tagsRepo.ts` added `findTagsByNoteId`
+  - `lib/services/tagService.ts` added `listTagsForNote`
+
+### Architectural Rationale
+- UI remains in `app/` and interacts via API endpoints.
+- No business rules were moved into components; services/repositories remain the behavior/data boundaries.
+- Kept changes minimal by adding only one missing read endpoint for note-tag chips.
+
+### List of files changed
+- `app/notes/page.tsx`
+- `app/review/page.tsx`
+- `app/api/notes/[id]/tags/route.ts`
+- `lib/repositories/tagsRepo.ts`
+- `lib/services/tagService.ts`
+
+### Invariants involved
+- Soft-delete behavior remains default for notes (deleted notes hidden from reads).
+- Review batch stability remains service-driven (same day stable, mark-reviewed does not reshuffle).
+- API routes continue to call services only (no direct Prisma in routes outside repository layer).
+
+### What I Should Understand Conceptually
+- UI is now a thin client of the API surface built in Phase 3.
+- Note-tag rendering needs both note list and per-note tag association reads.
+- Review UI state tracks client navigation/progress while server preserves batch invariants.
+
+### What Would Break If We Changed X
+- If note-tag GET support is removed, note cards cannot reliably render tag chips.
+- If UI bypasses API and calls data layer directly, architecture boundaries and future auth migration become harder.
+- If delete semantics change from soft-delete defaults, deleted notes may leak into `/notes` or `/review`.
+
+### What To Improve Next Iteration
+- Add a dedicated API shape for notes-with-tags to avoid N+1 fetches from the notes page.
+- Add lightweight loading/error UI states per card action (edit/tag/delete) for finer feedback.
+- Start Phase 4.2 enhancements: i18n extraction and tag count/filter support.
+
+## Phase 4.2 Implementation
+
+## 2026-03-02
+
+### Technical Summary (what changed, which files)
+- Added i18n message foundation file:
+  - `lib/i18n/messages/en.ts`
+- Updated UI pages to consume centralized messages:
+  - `app/notes/page.tsx`
+  - `app/review/page.tsx`
+- Added tag count + click-to-filter support in notes UI:
+  - `app/notes/page.tsx`
+- Added backend support for notes-by-tag and tags-with-counts:
+  - `lib/repositories/noteRepository.ts` (`tagId` filter support)
+  - `app/api/notes/route.ts` (`tagId` query handling)
+  - `lib/repositories/tagsRepo.ts` (`findManyTagsWithCounts`)
+  - `lib/services/tagService.ts` (`listTagsWithCounts`)
+  - `app/api/tags/route.ts` (`includeCounts=true`)
+- Kept note-tag listing endpoint in place for UI tag chips:
+  - `app/api/notes/[id]/tags/route.ts`
+- Extended API smoke coverage for new behavior:
+  - `scripts/smoke-api.ts` (tags with counts, notes filter by `tagId`)
+
+### Architectural Rationale
+- i18n extraction starts at UI layer only, keeping services/repositories language-agnostic.
+- Tag counts/filter are delivered as additive API options (`includeCounts`, `tagId`) to avoid breaking existing clients.
+- UI continues consuming API routes; no direct DB access from components.
+
+### List of files changed
+- `lib/i18n/messages/en.ts`
+- `app/notes/page.tsx`
+- `app/review/page.tsx`
+- `lib/repositories/noteRepository.ts`
+- `app/api/notes/route.ts`
+- `lib/repositories/tagsRepo.ts`
+- `lib/services/tagService.ts`
+- `app/api/tags/route.ts`
+- `app/api/notes/[id]/tags/route.ts`
+- `scripts/smoke-api.ts`
+
+### Invariants involved
+- No business logic in UI components beyond state/interaction wiring.
+- API routes remain thin and service-driven.
+- Soft-delete/read invariants remain unchanged.
+- Existing API response envelope remains `{ data } / { error }`.
+
+### What I Should Understand Conceptually
+- i18n foundation means centralizing strings first; language switching can be layered later.
+- Tag counts and tag filtering are query-level concerns exposed via optional API parameters.
+- UI feature growth is safest when backend support is additive and backward compatible.
+
+### What Would Break If We Changed X
+- If tag normalization/scoping is bypassed, counts/filtering can become inconsistent.
+- If notes-by-tag filtering is removed, clickable tag filter UX breaks.
+- If strings are re-hardcoded widely, i18n rollout cost increases.
+
+### What To Improve Next Iteration
+- Add actual language toggle + persistence to complete i18n UX.
+- Replace per-note tag fetches with a notes-with-tags API shape to reduce network round trips.
+- Add optional tag count display in more UI surfaces (e.g., review context, filters summary).
+
+## Phase 4.3 Implementation
+
+## 2026-03-02
+
+### Technical Summary (what changed, which files)
+- Added full EN/ZH message set:
+  - `lib/i18n/messages/zh.ts`
+- Added shared i18n runtime helpers:
+  - `lib/i18n/index.ts` (`Locale` type, message lookup, locale persistence)
+- Added reusable language toggle UI:
+  - `components/LanguageToggle.tsx`
+- Wired notes/review pages to locale-aware messages and persisted selection:
+  - `app/notes/page.tsx`
+  - `app/review/page.tsx`
+
+### Architectural Rationale
+- Kept i18n concerns centralized in `lib/i18n` rather than scattering locale logic in pages.
+- Used localStorage persistence for Phase 1 simplicity and zero backend coupling.
+- Implemented locale switch so it updates UI copy without forcing notes/review data reload semantics.
+
+### Invariants involved
+- Existing API contracts and response envelopes remain unchanged.
+- Notes/review business logic remains in services/routes; UI only handles presentation/state.
+- Review batch stability remains server-driven and unaffected by locale selection.
+
+### What I Should Understand Conceptually
+- i18n rollout is complete when both string catalogs and runtime locale selection are present.
+- Locale persistence is a UX concern and should not alter data retrieval invariants.
+
+### What To Improve Next Iteration
+- Add optional server-side locale preference source when authentication exists.
+- Add locale-aware date/time formatting for created/review timestamps.

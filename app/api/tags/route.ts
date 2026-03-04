@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createTag, listTags } from "@/lib/services/tagService";
+import { createTag, listTags, listTagsWithCounts } from "@/lib/services/tagService";
 
 type CreateTagBody = {
   name?: unknown;
@@ -14,8 +14,14 @@ export async function GET(request: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId") ?? undefined;
+    const includeCountsRaw = searchParams.get("includeCounts");
+    const includeCounts =
+      includeCountsRaw === "true" ? true : includeCountsRaw === "false" ? false : undefined;
+    if (includeCountsRaw && includeCounts === undefined) {
+      return badRequest("includeCounts must be either 'true' or 'false'.");
+    }
 
-    const tags = await listTags(userId);
+    const tags = includeCounts ? await listTagsWithCounts(userId) : await listTags(userId);
     return NextResponse.json({ data: tags });
   } catch {
     return NextResponse.json({ error: "Failed to list tags." }, { status: 500 });

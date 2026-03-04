@@ -24,6 +24,10 @@ type TagResponse = {
   name: string;
 };
 
+type TagWithCountResponse = TagResponse & {
+  noteCount: number;
+};
+
 function pass(message: string): void {
   console.log(`PASS: ${message}`);
 }
@@ -134,6 +138,16 @@ async function main(): Promise<void> {
     );
     pass("listed tags includes created tag");
 
+    const listTagsWithCountsRes = await fetch(
+      `${baseUrl}/api/tags?userId=${encodeURIComponent(userId)}&includeCounts=true`,
+    );
+    assert(listTagsWithCountsRes.status === 200, "list tags with counts should return 200");
+    const listTagsWithCountsPayload = await parseJson<TagWithCountResponse[]>(listTagsWithCountsRes);
+    const countedTag = listTagsWithCountsPayload.data?.find((tag) => tag.id === existingTagId);
+    assert(countedTag !== undefined, "list tags with counts should include created tag");
+    assert(typeof countedTag.noteCount === "number", "tag count should be a number");
+    pass("listed tags with counts via API");
+
     const attachExistingTagRes = await fetch(`${baseUrl}/api/notes/${noteId}/tags`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -141,6 +155,17 @@ async function main(): Promise<void> {
     });
     assert(attachExistingTagRes.status === 201, "attach existing tag should return 201");
     pass("attached existing tag to note via API");
+
+    const listNotesByTagRes = await fetch(
+      `${baseUrl}/api/notes?userId=${encodeURIComponent(userId)}&tagId=${encodeURIComponent(existingTagId)}`,
+    );
+    assert(listNotesByTagRes.status === 200, "list notes by tagId should return 200");
+    const listNotesByTagPayload = await parseJson<NoteResponse[]>(listNotesByTagRes);
+    assert(
+      listNotesByTagPayload.data?.some((note) => note.id === noteId),
+      "list notes by tagId should include tagged note",
+    );
+    pass("filtered notes by tagId via API");
 
     const invalidAttachTagPayloadRes = await fetch(`${baseUrl}/api/notes/${noteId}/tags`, {
       method: "POST",
@@ -160,6 +185,21 @@ async function main(): Promise<void> {
     assert(attachNewTagPayload.data?.tag.id, "attach new tag should return created/selected tag");
     createdTagIds.push(attachNewTagPayload.data.tag.id);
     pass("created-and-attached tag by name via API");
+
+    const listNoteTagsRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}/tags?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(listNoteTagsRes.status === 200, "list note tags should return 200");
+    const listNoteTagsPayload = await parseJson<TagResponse[]>(listNoteTagsRes);
+    assert(
+      listNoteTagsPayload.data?.some((tag) => tag.id === existingTagId),
+      "list note tags should include attached existing tag",
+    );
+    assert(
+      listNoteTagsPayload.data?.some((tag) => tag.id === attachNewTagPayload.data?.tag.id),
+      "list note tags should include attached new tag",
+    );
+    pass("listed tags for note via API");
 
     const detachTagRes = await fetch(
       `${baseUrl}/api/notes/${noteId}/tags/${existingTagId}?userId=${encodeURIComponent(userId)}`,

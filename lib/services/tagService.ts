@@ -5,9 +5,12 @@ import {
   createTag as createTagRepo,
   detachTagFromNote as detachTagFromNoteRepo,
   findManyTags as findManyTagsRepo,
+  findManyTagsWithCounts as findManyTagsWithCountsRepo,
+  findTagsByNoteId as findTagsByNoteIdRepo,
   findTagById as findTagByIdRepo,
   findTagByName as findTagByNameRepo,
   hardDeleteTag as hardDeleteTagRepo,
+  type TagWithCount,
 } from "@/lib/repositories/tagsRepo";
 
 type AttachTagInput = {
@@ -21,6 +24,19 @@ function normalizeTagName(input: string): string {
 
 export async function listTags(userId?: string): Promise<Tag[]> {
   return findManyTagsRepo(userId);
+}
+
+export async function listTagsWithCounts(userId?: string): Promise<TagWithCount[]> {
+  return findManyTagsWithCountsRepo(userId);
+}
+
+export async function listTagsForNote(noteId: string, userId?: string): Promise<Tag[]> {
+  const note = await getNoteById(noteId, userId);
+  if (!note) {
+    throw new Error("NOTE_NOT_FOUND");
+  }
+
+  return findTagsByNoteIdRepo(noteId, userId);
 }
 
 export async function createTag(name: string, userId?: string): Promise<Tag> {
