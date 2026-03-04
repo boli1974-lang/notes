@@ -36,3 +36,10 @@
 - Notes page still does per-note tag fetches (N+1 pattern); acceptable for MVP scale.
 - Locale preference is localStorage-only (not account-scoped, expected for single-user MVP).
 - Local dev/runtime and smoke gates depend on Supabase connectivity; failures can be environmental rather than code regressions.
+
+### Launch Record
+- Production URL: `https://notes-nine-azure.vercel.app/
+- Deployment timestamp (local): `2026-03-03 20:14
+- Commit deployed: `e68c7c5`
+- Production smoke: PASS
+- Post-deploy manual sanity: PASS

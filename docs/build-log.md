@@ -412,3 +412,7 @@
 ### What To Improve Next Iteration
 - Add a preflight connectivity check for `DATABASE_URL` target before running runtime/smoke gates.
 - Add a lightweight fallback/local DB path for offline smoke verification.
+
+### MVP Launch Note
+- MVP is now live in production at `https://notes-nine-azure.vercel.app
+- Phase 0 through Phase 5 exit criteria are satisfied for current single-user scope.
