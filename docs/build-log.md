@@ -370,3 +370,45 @@
 ### What To Improve Next Iteration
 - Add optional server-side locale preference source when authentication exists.
 - Add locale-aware date/time formatting for created/review timestamps.
+
+## Phase 5 Implementation
+
+## 2026-03-03
+
+### Technical Summary (what changed, which files)
+- Added and filled stability/deployment gate checklist:
+  - `docs/quality-gates.md`
+- Ran Phase 5 gates:
+  - `npx tsc --noEmit` (pass)
+  - `npm run lint` (pass)
+  - `npm run dev` runtime check (pass)
+  - `npm run smoke:api` (pass)
+- Fixed a compile-time i18n typing issue discovered during gates:
+  - `lib/i18n/index.ts` (widened message value typing while preserving key-shape safety)
+
+### Architectural Rationale
+- Kept Phase 5 focused on verification and release readiness, not feature growth.
+- Captured gate outcomes and blockers explicitly so deployment decisions are evidence-based.
+
+### List of files changed
+- `docs/quality-gates.md`
+- `docs/build-log.md`
+- `lib/i18n/index.ts`
+
+### Invariants involved
+- Layer boundaries unchanged (UI/API/services/repositories separation).
+- Review batch stability rules unchanged.
+- Soft-delete exclusion invariants unchanged.
+- i18n centralization unchanged; only type safety corrected.
+
+### What I Should Understand Conceptually
+- Phase 5 is primarily about confidence gates and operational readiness.
+- Runtime/smoke failures can surface environment constraints distinct from code defects; re-running after network stabilization is part of release readiness.
+
+### What Would Break If We Changed X
+- If compile/lint gates are skipped, regressions (like over-literal i18n typing) can reach runtime.
+- If runtime/smoke gate failures are ignored, deploy confidence drops and production risk rises.
+
+### What To Improve Next Iteration
+- Add a preflight connectivity check for `DATABASE_URL` target before running runtime/smoke gates.
+- Add a lightweight fallback/local DB path for offline smoke verification.

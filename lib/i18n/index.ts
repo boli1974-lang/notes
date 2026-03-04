@@ -7,12 +7,17 @@ export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
 export const LOCALE_STORAGE_KEY = "notes-mvp.locale";
 
-export const messagesByLocale = {
+type MessageSchema = {
+  notes: { [K in keyof typeof enMessages.notes]: string };
+  review: { [K in keyof typeof enMessages.review]: string };
+};
+
+export const messagesByLocale: Record<Locale, MessageSchema> = {
   en: enMessages,
   zh: zhMessages,
-} as const;
+};
 
-export type Messages = typeof messagesByLocale.en;
+export type Messages = MessageSchema;
 
 export function isLocale(value: string): value is Locale {
   return SUPPORTED_LOCALES.includes(value as Locale);
