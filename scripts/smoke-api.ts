@@ -33,6 +33,13 @@ type TagWithCountResponse = TagResponse & {
   noteCount: number;
 };
 
+function removeTagFromCleanup(createdTagIds: string[], tagId: string): void {
+  const index = createdTagIds.indexOf(tagId);
+  if (index >= 0) {
+    createdTagIds.splice(index, 1);
+  }
+}
+
 function pass(message: string): void {
   console.log(`PASS: ${message}`);
 }
@@ -138,6 +145,18 @@ async function main(): Promise<void> {
     createdTagIds.push(existingTagId);
     pass("created tag via API");
 
+    const createUnusedTagRes = await fetch(`${baseUrl}/api/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `${tagMarker}-unused`, userId }),
+    });
+    assert(createUnusedTagRes.status === 201, "create unused tag should return 201");
+    const createUnusedTagPayload = await parseJson<TagResponse>(createUnusedTagRes);
+    assert(createUnusedTagPayload.data?.id, "create unused tag should return tag data");
+    const unusedTagId = createUnusedTagPayload.data.id;
+    createdTagIds.push(unusedTagId);
+    pass("created unused tag via API");
+
     const listTagsRes = await fetch(`${baseUrl}/api/tags?userId=${encodeURIComponent(userId)}`);
     assert(listTagsRes.status === 200, "list tags should return 200");
     const listTagsPayload = await parseJson<TagResponse[]>(listTagsRes);
@@ -237,6 +256,83 @@ async function main(): Promise<void> {
     assert(getAfterDeleteRes.status === 404, "deleted note should be hidden by default");
     pass("default read excludes soft-deleted note");
 
+    const restoreRes = await fetch(`${baseUrl}/api/notes/${noteId}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    assert(restoreRes.status === 200, "restore note should return 200");
+    pass("restored soft-deleted note via API");
+
+    const getAfterRestoreRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(getAfterRestoreRes.status === 200, "restored note should be visible again");
+    const getAfterRestorePayload = await parseJson<NoteResponse>(getAfterRestoreRes);
+    assert(getAfterRestorePayload.data, "restored note response should include data");
+    assert(
+      getAfterRestorePayload.data.title === `${marker}-updated`,
+      "restored note should keep previous title",
+    );
+    assert(
+      getAfterRestorePayload.data.content === `content-${marker}`,
+      "restored note should keep previous content",
+    );
+    pass("restore returns previous note title/content");
+
+    const listNoteTagsAfterRestoreRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}/tags?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(listNoteTagsAfterRestoreRes.status === 200, "list note tags after restore should return 200");
+    const listNoteTagsAfterRestorePayload = await parseJson<TagResponse[]>(listNoteTagsAfterRestoreRes);
+    assert(
+      listNoteTagsAfterRestorePayload.data?.some((tag) => tag.id === attachNewTagPayload.data?.tag.id),
+      "restored note should keep previously attached tags",
+    );
+    assert(
+      !listNoteTagsAfterRestorePayload.data?.some((tag) => tag.id === existingTagId),
+      "restored note should keep previous detached-tag state",
+    );
+    pass("restore returns previous note tags state");
+
+    const secondDeleteRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}?userId=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    assert(secondDeleteRes.status === 200, "second soft delete after restore should return 200");
+    const getAfterSecondDeleteRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(getAfterSecondDeleteRes.status === 404, "note should be hidden after second soft delete");
+    pass("delete-restore-delete remains stable");
+
+    const secondRestoreRes = await fetch(`${baseUrl}/api/notes/${noteId}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    assert(secondRestoreRes.status === 200, "second restore should return 200");
+    const getAfterSecondRestoreRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(getAfterSecondRestoreRes.status === 200, "note should be visible after second restore");
+    pass("delete-restore-delete-restore repeatability works");
+
+    const deleteUnusedTagRes = await fetch(
+      `${baseUrl}/api/tags/${unusedTagId}?userId=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    assert(deleteUnusedTagRes.status === 200, "delete unused tag should return 200");
+    removeTagFromCleanup(createdTagIds, unusedTagId);
+    pass("deleted unused tag via API");
+
+    const deleteUsedTagRes = await fetch(
+      `${baseUrl}/api/tags/${attachNewTagPayload.data!.tag.id}?userId=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    assert(deleteUsedTagRes.status === 409, "delete in-use tag should return 409");
+    pass("in-use tag cannot be deleted");
+
     // Create isolated review notes.
     for (let i = 0; i < 4; i += 1) {
       const res = await fetch(`${baseUrl}/api/notes`, {
@@ -290,6 +386,25 @@ async function main(): Promise<void> {
     const dedupedFirstCount = await countReviewEventsForNoteOnDate(firstNoteId, reviewDay, userId);
     assert(dedupedFirstCount === 1, "same-day review event writes should dedupe to one event");
     pass("same-day review event writes are deduplicated to one event");
+
+    // Product decision: undo restore preserves review status/history.
+    const deleteReviewedNoteRes = await fetch(
+      `${baseUrl}/api/notes/${firstNoteId}?userId=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    assert(deleteReviewedNoteRes.status === 200, "soft delete reviewed note should return 200");
+    const restoreReviewedNoteRes = await fetch(`${baseUrl}/api/notes/${firstNoteId}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    assert(restoreReviewedNoteRes.status === 200, "restore reviewed note should return 200");
+    const reviewedCountAfterRestore = await countReviewEventsForNoteOnDate(firstNoteId, reviewDay, userId);
+    assert(
+      reviewedCountAfterRestore === 1,
+      "restoring a deleted reviewed note should preserve review event history",
+    );
+    pass("undo restore preserves reviewed status/history");
 
     const invalidMarkReviewedPayloadRes = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
       method: "POST",

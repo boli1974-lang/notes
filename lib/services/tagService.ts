@@ -5,13 +5,15 @@ import {
   createTag as createTagRepo,
   detachTagFromNote as detachTagFromNoteRepo,
   findManyTags as findManyTagsRepo,
+  findManyUnusedTags as findManyUnusedTagsRepo,
   findManyTagsWithCounts as findManyTagsWithCountsRepo,
   findTagsByNoteId as findTagsByNoteIdRepo,
   findTagById as findTagByIdRepo,
   findTagByName as findTagByNameRepo,
   hardDeleteTag as hardDeleteTagRepo,
+  hardDeleteUnusedTag as hardDeleteUnusedTagRepo,
   type TagWithCount,
-} from "@/lib/repositories/tagsRepo";
+} from "@/lib/repositories/tagRepository";
 
 type AttachTagInput = {
   tagId?: string;
@@ -28,6 +30,10 @@ export async function listTags(userId?: string): Promise<Tag[]> {
 
 export async function listTagsWithCounts(userId?: string): Promise<TagWithCount[]> {
   return findManyTagsWithCountsRepo(userId);
+}
+
+export async function listUnusedTags(userId?: string): Promise<Tag[]> {
+  return findManyUnusedTagsRepo(userId);
 }
 
 export async function listTagsForNote(noteId: string, userId?: string): Promise<Tag[]> {
@@ -115,4 +121,18 @@ export async function detachTagFromNote(
 
 export async function hardDeleteTag(tagId: string, userId?: string): Promise<boolean> {
   return hardDeleteTagRepo(tagId, userId);
+}
+
+export async function deleteUnusedTag(tagId: string, userId?: string): Promise<boolean> {
+  const deleted = await hardDeleteUnusedTagRepo(tagId, userId);
+  if (deleted) {
+    return true;
+  }
+
+  const existing = await findTagByIdRepo(tagId, userId);
+  if (!existing) {
+    throw new Error("TAG_NOT_FOUND");
+  }
+
+  throw new Error("TAG_IN_USE");
 }

@@ -20,6 +20,12 @@ type TagWithCount = Tag & {
   noteCount: number;
 };
 
+type PendingDeletedNote = {
+  note: Note;
+  index: number;
+  timeoutId: ReturnType<typeof setTimeout>;
+};
+
 type ApiResponse<T> = {
   data?: T;
   error?: string;
@@ -33,6 +39,12 @@ function normalizeTagName(value: string): string {
   return value.trim().toLowerCase();
 }
 
+const TAG_NAME_MAX_LENGTH = 30;
+
+function isTagNameTooLong(normalizedTagName: string): boolean {
+  return normalizedTagName.length > TAG_NAME_MAX_LENGTH;
+}
+
 export default function NotesPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
@@ -40,8 +52,10 @@ export default function NotesPage() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [tagsByNote, setTagsByNote] = useState<Record<string, Tag[]>>({});
   const [tagSummary, setTagSummary] = useState<TagWithCount[]>([]);
+  const [unusedTags, setUnusedTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDeletedNote, setPendingDeletedNote] = useState<PendingDeletedNote | null>(null);
 
   const [quickTitle, setQuickTitle] = useState("");
   const [quickContent, setQuickContent] = useState("");
@@ -95,6 +109,9 @@ export default function NotesPage() {
   );
   const createTagSuggestions = useMemo(() => {
     const query = normalizeTagName(createTagInput);
+    if (isTagNameTooLong(query)) {
+      return [];
+    }
     if (!query) {
       return [];
     }
@@ -103,6 +120,14 @@ export default function NotesPage() {
       .filter((tag) => tag.name.startsWith(query) && !selected.has(tag.name))
       .slice(0, 6);
   }, [createTagInput, createTagNames, tagSummary]);
+  const createTagInputNormalized = useMemo(
+    () => normalizeTagName(createTagInput),
+    [createTagInput],
+  );
+  const isCreateTagInputTooLong = useMemo(
+    () => isTagNameTooLong(createTagInputNormalized),
+    [createTagInputNormalized],
+  );
 
   const loadTagsForNote = useCallback(async (noteId: string): Promise<void> => {
     const res = await fetch(`/api/notes/${noteId}/tags`);
@@ -126,6 +151,15 @@ export default function NotesPage() {
     setTagSummary(payload.data);
   }, []);
 
+  const loadUnusedTags = useCallback(async (): Promise<void> => {
+    const res = await fetch("/api/tags/unused");
+    const payload = await readJson<Tag[]>(res);
+    if (!res.ok || !payload.data) {
+      throw new Error(payload.error ?? getMessages(localeRef.current).notes.errorLoadUnusedTags);
+    }
+    setUnusedTags(payload.data);
+  }, []);
+
   const loadNotes = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -141,21 +175,37 @@ export default function NotesPage() {
       setNotes(payload.data);
       setTagsByNote({});
       await Promise.all(payload.data.map((note) => loadTagsForNote(note.id)));
-      await loadTagSummary();
-    } catch {
-      setError(getMessages(localeRef.current).notes.errorLoadNotes);
+      await Promise.all([loadTagSummary(), loadUnusedTags()]);
+    } catch (loadError) {
+      if (loadError instanceof Error && loadError.message) {
+        setError(loadError.message);
+      } else {
+        setError(getMessages(localeRef.current).notes.errorLoadNotes);
+      }
     } finally {
       setLoading(false);
     }
-  }, [loadTagSummary, loadTagsForNote, queryString]);
+  }, [loadTagSummary, loadTagsForNote, loadUnusedTags, queryString]);
 
   useEffect(() => {
     void loadNotes();
   }, [loadNotes]);
 
+  useEffect(() => {
+    return () => {
+      if (pendingDeletedNote) {
+        clearTimeout(pendingDeletedNote.timeoutId);
+      }
+    };
+  }, [pendingDeletedNote]);
+
   function addCreateTagName(rawTag: string): void {
     const normalized = normalizeTagName(rawTag);
     if (!normalized) {
+      return;
+    }
+    if (isTagNameTooLong(normalized)) {
+      setError(t.errorTagTooLong);
       return;
     }
     setCreateTagNames((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
@@ -207,6 +257,10 @@ export default function NotesPage() {
       }
 
       const pendingTagFromInput = normalizeTagName(createTagInput);
+      if (pendingTagFromInput && isTagNameTooLong(pendingTagFromInput)) {
+        setError(t.errorTagTooLong);
+        return;
+      }
       const tagsToAttach = Array.from(
         new Set([
           ...createTagNames,
@@ -272,6 +326,12 @@ export default function NotesPage() {
 
   async function softDelete(noteId: string): Promise<void> {
     setError(null);
+    const noteToDelete = notes.find((note) => note.id === noteId);
+    const noteIndex = notes.findIndex((note) => note.id === noteId);
+    if (!noteToDelete) {
+      return;
+    }
+
     try {
       const res = await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
       const payload = await readJson<{ deleted: boolean }>(res);
@@ -286,15 +346,56 @@ export default function NotesPage() {
         delete next[noteId];
         return next;
       });
-      await loadTagSummary();
+      if (pendingDeletedNote) {
+        clearTimeout(pendingDeletedNote.timeoutId);
+      }
+      const timeoutId = setTimeout(() => {
+        setPendingDeletedNote(null);
+      }, 8000);
+      setPendingDeletedNote({
+        note: noteToDelete,
+        index: noteIndex >= 0 ? noteIndex : 0,
+        timeoutId,
+      });
+      await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
       setError(t.errorDeleteNote);
+    }
+  }
+
+  async function undoSoftDelete(): Promise<void> {
+    if (!pendingDeletedNote) {
+      return;
+    }
+
+    clearTimeout(pendingDeletedNote.timeoutId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/notes/${pendingDeletedNote.note.id}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const payload = await readJson<{ restored: boolean }>(res);
+      if (!res.ok) {
+        setError(payload.error ?? t.errorRestoreNote);
+        return;
+      }
+
+      setPendingDeletedNote(null);
+      await loadNotes();
+    } catch {
+      setError(t.errorRestoreNote);
     }
   }
 
   async function attachTag(noteId: string): Promise<void> {
     const tagName = normalizeTagName(tagInputByNote[noteId] ?? "");
     if (!tagName) {
+      return;
+    }
+    if (isTagNameTooLong(tagName)) {
+      setError(t.errorTagTooLong);
       return;
     }
 
@@ -315,7 +416,7 @@ export default function NotesPage() {
         }
         return { ...prev, [noteId]: [attachedTag, ...existing] };
       });
-      await loadTagSummary();
+      await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
       setError(t.errorAttachTag);
     } finally {
@@ -339,7 +440,7 @@ export default function NotesPage() {
         }
         return { ...prev, [noteId]: [payload.tag, ...existing] };
       });
-      await loadTagSummary();
+      await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
       setError(t.errorAttachTag);
     } finally {
@@ -364,11 +465,28 @@ export default function NotesPage() {
         ...prev,
         [noteId]: (prev[noteId] ?? []).filter((tag) => tag.id !== tagId),
       }));
-      await loadTagSummary();
+      await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
       setError(t.errorDetachTag);
     } finally {
       setTagBusyNoteId(null);
+    }
+  }
+
+  async function deleteUnusedTag(tagId: string): Promise<void> {
+    setError(null);
+    try {
+      const res = await fetch(`/api/tags/${tagId}`, { method: "DELETE" });
+      const payload = await readJson<{ deleted: boolean }>(res);
+      if (!res.ok) {
+        setError(payload.error ?? t.errorDeleteUnusedTag);
+        return;
+      }
+
+      setUnusedTags((prev) => prev.filter((tag) => tag.id !== tagId));
+      await loadTagSummary();
+    } catch {
+      setError(t.errorDeleteUnusedTag);
     }
   }
 
@@ -408,21 +526,27 @@ export default function NotesPage() {
         />
         <div className="space-y-2">
           <label className="block text-xs font-medium text-slate-700">{t.createTagsLabel}</label>
+          <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
           <div className="flex gap-2">
             <input
               value={createTagInput}
               onChange={(event) => setCreateTagInput(event.target.value)}
               placeholder={t.createTagPlaceholder}
+              maxLength={TAG_NAME_MAX_LENGTH}
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
             />
             <button
               type="button"
               onClick={() => addCreateTagName(createTagInput)}
+              disabled={isCreateTagInputTooLong}
               className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
             >
               {t.addTag}
             </button>
           </div>
+          {isCreateTagInputTooLong ? (
+            <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>
+          ) : null}
           {createTagSuggestions.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {createTagSuggestions.map((tag) => (
@@ -507,6 +631,31 @@ export default function NotesPage() {
         </div>
       </div>
 
+      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="text-sm font-semibold text-slate-700">{t.unusedTagsTitle}</h2>
+        <div className="flex flex-wrap gap-2">
+          {unusedTags.map((tag) => (
+            <span
+              key={tag.id}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+            >
+              #{tag.name}
+              <button
+                onClick={() => {
+                  void deleteUnusedTag(tag.id);
+                }}
+                className="rounded border border-red-300 px-1.5 py-0.5 text-[10px] text-red-700 hover:bg-red-50"
+              >
+                {t.deleteUnusedTag}
+              </button>
+            </span>
+          ))}
+          {unusedTags.length === 0 ? (
+            <span className="text-xs text-slate-500">{t.noUnusedTags}</span>
+          ) : null}
+        </div>
+      </div>
+
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row">
         <input
           value={search}
@@ -538,9 +687,43 @@ export default function NotesPage() {
         </div>
       ) : (
         <ul className="space-y-4">
-          {notes.map((note) => {
-            const isEditing = editingNoteId === note.id;
-            const tags = tagsByNote[note.id] ?? [];
+          {(() => {
+            const items: Array<{ kind: "note"; note: Note } | { kind: "undo" }> = notes.map((note) => ({
+              kind: "note",
+              note,
+            }));
+            if (pendingDeletedNote) {
+              const insertAt = Math.max(0, Math.min(pendingDeletedNote.index, items.length));
+              items.splice(insertAt, 0, { kind: "undo" });
+            }
+
+            return items.map((item, idx) => {
+              if (item.kind === "undo") {
+                if (!pendingDeletedNote) {
+                  return null;
+                }
+                return (
+                  <li key={`undo-${pendingDeletedNote.note.id}-${idx}`} className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+                    <div className="flex items-center justify-between gap-3 text-sm text-amber-800">
+                      <span>
+                        {t.noteDeletedUndoPrefix} {pendingDeletedNote.note.title?.trim() || t.untitled}
+                      </span>
+                      <button
+                        onClick={() => {
+                          void undoSoftDelete();
+                        }}
+                        className="rounded-md border border-amber-300 px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                      >
+                        {t.undoDelete}
+                      </button>
+                    </div>
+                  </li>
+                );
+              }
+
+              const note = item.note;
+              const isEditing = editingNoteId === note.id;
+              const tags = tagsByNote[note.id] ?? [];
             return (
               <li key={note.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 {isEditing ? (
@@ -629,27 +812,44 @@ export default function NotesPage() {
                     </div>
 
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <input
-                        value={tagInputByNote[note.id] ?? ""}
-                        onChange={(event) =>
-                          setTagInputByNote((prev) => ({ ...prev, [note.id]: event.target.value }))
-                        }
-                        placeholder={t.addTagPlaceholder}
-                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
-                      />
-                      <button
-                        onClick={() => {
-                          void attachTag(note.id);
-                        }}
-                        disabled={tagBusyNoteId === note.id}
-                        className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                      >
-                        {t.addTag}
-                      </button>
+                      {(() => {
+                        const normalizedInput = normalizeTagName(tagInputByNote[note.id] ?? "");
+                        const isTooLong = isTagNameTooLong(normalizedInput);
+                        return (
+                          <>
+                            <input
+                              value={tagInputByNote[note.id] ?? ""}
+                              onChange={(event) =>
+                                setTagInputByNote((prev) => ({ ...prev, [note.id]: event.target.value }))
+                              }
+                              placeholder={t.addTagPlaceholder}
+                              maxLength={TAG_NAME_MAX_LENGTH}
+                              className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
+                            />
+                            <button
+                              onClick={() => {
+                                void attachTag(note.id);
+                              }}
+                              disabled={tagBusyNoteId === note.id || isTooLong}
+                              className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                            >
+                              {t.addTag}
+                            </button>
+                          </>
+                        );
+                      })()}
                     </div>
+                    <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
+                    {(() => {
+                      const normalizedInput = normalizeTagName(tagInputByNote[note.id] ?? "");
+                      if (!isTagNameTooLong(normalizedInput)) {
+                        return null;
+                      }
+                      return <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>;
+                    })()}
                     {(() => {
                       const query = normalizeTagName(tagInputByNote[note.id] ?? "");
-                      if (!query) {
+                      if (!query || isTagNameTooLong(query)) {
                         return null;
                       }
                       const attachedIds = new Set(tags.map((tag) => tag.id));
@@ -684,7 +884,8 @@ export default function NotesPage() {
                 )}
               </li>
             );
-          })}
+            });
+          })()}
         </ul>
       )}
     </div>

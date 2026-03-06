@@ -231,10 +231,10 @@ Features:
 - Tag length limit displayed before tag creation.
 - **Delete note with Undo safety**
   - Deleting a note immediately hides it from the notes list.
-  - A toast notification appears with **Undo**.
-  - Undo window: **5 seconds**.
+  - An inline notification appears with **Undo** near the deleted note position.
+  - Undo window: **8 seconds**.
   - If Undo is clicked, the note is restored. Please decide on whether the note's status resets or not, e.g. does it keep the marked reviewed status, and state your decision and rational explicitly in your proposal for human approval.
-  - If the toast expires, the note remains deleted (soft delete persists).
+  - If the notification expires, the note remains deleted (soft delete persists).
 
 Exit Criteria:
 
@@ -251,13 +251,16 @@ Improve the note creation and editing experience through better layout and inter
 
 Features:
 
-- Add tags during note creation.
+- Support attaching multiple tags at once via semicolon-separated input (e.g., `idea;product;urgent`).
+- Allow attach/detach tags while editing from Review mode (`/review`).
 - Improve layout of the note editor.
 - Reduce number of steps needed to create a note.
 
 Exit Criteria:
 
 - Creating a note and attaching tags can happen in one continuous flow.
+- Users can attach multiple tags in one action using semicolon-separated input.
+- Tag editing is available in both Notes and Review edit flows.
 - Note creation is faster and clearer than the MVP version.
 
 ---

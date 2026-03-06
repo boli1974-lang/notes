@@ -68,6 +68,22 @@ export async function findManyTagsWithCounts(userId?: string): Promise<TagWithCo
   }));
 }
 
+export async function findManyUnusedTags(userId?: string): Promise<Tag[]> {
+  return prisma.tag.findMany({
+    where: {
+      ...withOptionalUserWhere(userId),
+      noteTags: {
+        none: {
+          note: {
+            deletedAt: null,
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
 export async function findTagsByNoteId(noteId: string, userId?: string): Promise<Tag[]> {
   const noteTags = await prisma.noteTag.findMany({
     where: {
@@ -119,6 +135,24 @@ export async function hardDeleteTag(id: string, userId?: string): Promise<boolea
     where: {
       id,
       ...withOptionalUserWhere(userId),
+    },
+  });
+
+  return result.count > 0;
+}
+
+export async function hardDeleteUnusedTag(id: string, userId?: string): Promise<boolean> {
+  const result = await prisma.tag.deleteMany({
+    where: {
+      id,
+      ...withOptionalUserWhere(userId),
+      noteTags: {
+        none: {
+          note: {
+            deletedAt: null,
+          },
+        },
+      },
     },
   });
 

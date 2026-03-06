@@ -29,7 +29,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - `prisma/schema.prisma`
 - `lib/db.ts`
 - `lib/repositories/notesRepo.ts`
-- `lib/repositories/tagsRepo.ts`
+- `lib/repositories/tagRepository.ts`
 - `lib/repositories/reviewRepo.ts`
 
 ### Include invariants (e.g., soft delete rules, review batch stability)
@@ -159,7 +159,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 ## 2026-03-01
 
 ### Technical Summary (what changed, which files)
-- Implemented tag repository methods in `lib/repositories/tagsRepo.ts` (create/find/list/attach/detach + explicit hard-delete helper).
+- Implemented tag repository methods in `lib/repositories/tagRepository.ts` (create/find/list/attach/detach + explicit hard-delete helper).
 - Added `lib/services/tagService.ts` for tag name normalization and attach orchestration (create-or-get then attach).
 - Added tag API routes:
   - `app/api/tags/route.ts` (GET, POST)
@@ -173,7 +173,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - Repositories remain persistence-only and deterministic.
 
 ### List of files changed
-- `lib/repositories/tagsRepo.ts`
+- `lib/repositories/tagRepository.ts`
 - `lib/services/tagService.ts`
 - `app/api/tags/route.ts`
 - `app/api/notes/[id]/tags/route.ts`
@@ -251,7 +251,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - Added one API capability needed by notes UI:
   - `app/api/notes/[id]/tags/route.ts` now supports `GET` to list tags for a note.
 - Extended tag data access support:
-  - `lib/repositories/tagsRepo.ts` added `findTagsByNoteId`
+  - `lib/repositories/tagRepository.ts` added `findTagsByNoteId`
   - `lib/services/tagService.ts` added `listTagsForNote`
 
 ### Architectural Rationale
@@ -263,7 +263,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - `app/notes/page.tsx`
 - `app/review/page.tsx`
 - `app/api/notes/[id]/tags/route.ts`
-- `lib/repositories/tagsRepo.ts`
+- `lib/repositories/tagRepository.ts`
 - `lib/services/tagService.ts`
 
 ### Invariants involved
@@ -301,7 +301,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - Added backend support for notes-by-tag and tags-with-counts:
   - `lib/repositories/noteRepository.ts` (`tagId` filter support)
   - `app/api/notes/route.ts` (`tagId` query handling)
-  - `lib/repositories/tagsRepo.ts` (`findManyTagsWithCounts`)
+  - `lib/repositories/tagRepository.ts` (`findManyTagsWithCounts`)
   - `lib/services/tagService.ts` (`listTagsWithCounts`)
   - `app/api/tags/route.ts` (`includeCounts=true`)
 - Kept note-tag listing endpoint in place for UI tag chips:
@@ -320,7 +320,7 @@ New work should be logged as: `Phase X — Milestone Y`.
 - `app/review/page.tsx`
 - `lib/repositories/noteRepository.ts`
 - `app/api/notes/route.ts`
-- `lib/repositories/tagsRepo.ts`
+- `lib/repositories/tagRepository.ts`
 - `lib/services/tagService.ts`
 - `app/api/tags/route.ts`
 - `app/api/notes/[id]/tags/route.ts`
@@ -542,3 +542,59 @@ New work should be logged as: `Phase X — Milestone Y`.
 - Replace per-note tag fetch pattern with a notes-with-tags API shape to reduce round trips.
 - Add keyboard navigation for suggestion list (arrow/enter) for faster accessibility.
 - Add cap/virtualization strategy if tag corpus grows large.
+
+## Phase 1 — Milestone 3 Implementation
+
+## 2026-03-06
+
+### Technical Summary (what changed, which files)
+- Added safe note restore endpoint at `app/api/notes/[id]/restore/route.ts` to support delete-with-undo UX while preserving review/event state.
+- Added unused-tag cleanup APIs:
+  - `GET /api/tags/unused` in `app/api/tags/unused/route.ts`
+  - `DELETE /api/tags/[id]` in `app/api/tags/[id]/route.ts` (returns `409` when tag is still in use)
+- Extended tag data layer for unused-tag hygiene:
+  - `findManyUnusedTags` and `hardDeleteUnusedTag` in `lib/repositories/tagRepository.ts`
+  - `listUnusedTags` and `deleteUnusedTag` in `lib/services/tagService.ts`
+- Updated `app/notes/page.tsx` with:
+  - soft-delete `Undo` action (8-second window)
+  - restore flow calling `/api/notes/[id]/restore`
+  - unused-tag panel with per-tag delete action
+  - visible tag length limit hint before tag creation/attach (`30` chars), plus UI-side input cap
+- Added i18n copy for restore/unused-tag actions and errors in:
+  - `lib/i18n/messages/en.ts`
+  - `lib/i18n/messages/zh.ts`
+- Expanded `scripts/smoke-api.ts` with assertions for:
+  - soft-delete -> restore restores previous note state (title/content/tags)
+  - review history preserved across delete/restore
+  - delete-restore-delete repeatability
+  - deleting unused tag succeeds
+  - deleting in-use tag fails with `409`
+
+### Architectural Rationale
+- Kept deletion safety minimal and explicit: note delete stays soft-delete; undo uses dedicated restore API.
+- Implemented unused-tag deletion as server-authoritative logic to avoid UI-only assumptions.
+- Preserved layering: UI -> API routes -> services -> repositories; no Prisma access from UI.
+- Naming convention note: architecture-level component and file naming are now aligned as `tagRepository`.
+
+### List of files changed
+- `app/api/notes/[id]/restore/route.ts`
+- `app/api/tags/unused/route.ts`
+- `app/api/tags/[id]/route.ts`
+- `app/notes/page.tsx`
+- `lib/repositories/tagRepository.ts`
+- `lib/services/tagService.ts`
+- `lib/i18n/messages/en.ts`
+- `lib/i18n/messages/zh.ts`
+- `scripts/smoke-api.ts`
+- `docs/build-log.md`
+
+### Invariants involved
+- Note deletion remains soft-delete; restore only clears deleted state.
+- Review-event records are not modified by note restore.
+- In-use tags cannot be deleted; API returns conflict instead of forcing detach.
+- API response contract remains `{ data }` / `{ error }`.
+
+### Post-manual-QA follow-up fixes
+- **Unused-tag semantics aligned with UI counts:** unused tags are now defined as tags attached to zero **active** notes (ignoring links that only point to soft-deleted notes). This aligns `Unused Tags` with `Tags` chips showing `(0)`.
+- **Undo visibility improved:** replaced top-of-page undo banner with an inline undo card inserted at the deleted note's original list position, so the action is visible near the user’s current context.
+- **Smoke coverage expanded and re-run:** `scripts/smoke-api.ts` now asserts restore returns previous title/content/tag state, preserves reviewed-status history across delete/restore, and supports delete-restore-delete repeatability. Full smoke suite passed after these updates.
