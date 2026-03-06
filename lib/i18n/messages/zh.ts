@@ -3,6 +3,8 @@ export const zhMessages = {
     title: "笔记",
     subtitle: "快速新增、编辑、软删除，并为每条笔记管理标签。",
     quickAddTitle: "快速新增",
+    createTagsLabel: "标签（可选）",
+    createTagPlaceholder: "输入标签后添加，或从建议中选择",
     titlePlaceholder: "标题（可选）",
     contentPlaceholder: "写下你的笔记...",
     addNote: "新增笔记",

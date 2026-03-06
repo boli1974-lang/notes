@@ -29,6 +29,10 @@ async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
   return (await response.json()) as ApiResponse<T>;
 }
 
+function normalizeTagName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export default function NotesPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
@@ -41,6 +45,8 @@ export default function NotesPage() {
 
   const [quickTitle, setQuickTitle] = useState("");
   const [quickContent, setQuickContent] = useState("");
+  const [createTagInput, setCreateTagInput] = useState("");
+  const [createTagNames, setCreateTagNames] = useState<string[]>([]);
   const [isSavingQuick, setIsSavingQuick] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -87,6 +93,16 @@ export default function NotesPage() {
     () => tagSummary.find((tag) => tag.id === selectedTagId) ?? null,
     [selectedTagId, tagSummary],
   );
+  const createTagSuggestions = useMemo(() => {
+    const query = normalizeTagName(createTagInput);
+    if (!query) {
+      return [];
+    }
+    const selected = new Set(createTagNames);
+    return tagSummary
+      .filter((tag) => tag.name.startsWith(query) && !selected.has(tag.name))
+      .slice(0, 6);
+  }, [createTagInput, createTagNames, tagSummary]);
 
   const loadTagsForNote = useCallback(async (noteId: string): Promise<void> => {
     const res = await fetch(`/api/notes/${noteId}/tags`);
@@ -137,6 +153,35 @@ export default function NotesPage() {
     void loadNotes();
   }, [loadNotes]);
 
+  function addCreateTagName(rawTag: string): void {
+    const normalized = normalizeTagName(rawTag);
+    if (!normalized) {
+      return;
+    }
+    setCreateTagNames((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    setCreateTagInput("");
+  }
+
+  function removeCreateTagName(tagName: string): void {
+    setCreateTagNames((prev) => prev.filter((tag) => tag !== tagName));
+  }
+
+  async function attachTagToNote(
+    noteId: string,
+    input: { tagId?: string; tagName?: string },
+  ): Promise<{ tag: Tag } | null> {
+    const res = await fetch(`/api/notes/${noteId}/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await readJson<{ tag: Tag }>(res);
+    if (!res.ok || !payload.data) {
+      throw new Error(payload.error ?? t.errorAttachTag);
+    }
+    return payload.data;
+  }
+
   async function onQuickAdd(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (!quickContent.trim()) {
@@ -161,8 +206,29 @@ export default function NotesPage() {
         return;
       }
 
+      const pendingTagFromInput = normalizeTagName(createTagInput);
+      const tagsToAttach = Array.from(
+        new Set([
+          ...createTagNames,
+          ...(pendingTagFromInput ? [pendingTagFromInput] : []),
+        ]),
+      );
+      if (payload.data?.id && tagsToAttach.length > 0) {
+        try {
+          await Promise.all(
+            tagsToAttach.map((tagName) =>
+              attachTagToNote(payload.data!.id, { tagName }),
+            ),
+          );
+        } catch {
+          setError(t.errorAttachTag);
+        }
+      }
+
       setQuickTitle("");
       setQuickContent("");
+      setCreateTagInput("");
+      setCreateTagNames([]);
       await loadNotes();
     } catch {
       setError(t.errorCreateNote);
@@ -227,7 +293,7 @@ export default function NotesPage() {
   }
 
   async function attachTag(noteId: string): Promise<void> {
-    const tagName = (tagInputByNote[noteId] ?? "").trim();
+    const tagName = normalizeTagName(tagInputByNote[noteId] ?? "");
     if (!tagName) {
       return;
     }
@@ -235,17 +301,11 @@ export default function NotesPage() {
     setTagBusyNoteId(noteId);
     setError(null);
     try {
-      const res = await fetch(`/api/notes/${noteId}/tags`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tagName }),
-      });
-      const payload = await readJson<{ tag: Tag }>(res);
-      if (!res.ok || !payload.data) {
-        setError(payload.error ?? t.errorAttachTag);
+      const payload = await attachTagToNote(noteId, { tagName });
+      if (!payload) {
         return;
       }
-      const attachedTag = payload.data.tag;
+      const attachedTag = payload.tag;
 
       setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
       setTagsByNote((prev) => {
@@ -254,6 +314,30 @@ export default function NotesPage() {
           return prev;
         }
         return { ...prev, [noteId]: [attachedTag, ...existing] };
+      });
+      await loadTagSummary();
+    } catch {
+      setError(t.errorAttachTag);
+    } finally {
+      setTagBusyNoteId(null);
+    }
+  }
+
+  async function attachExistingTag(noteId: string, tag: Tag): Promise<void> {
+    setTagBusyNoteId(noteId);
+    setError(null);
+    try {
+      const payload = await attachTagToNote(noteId, { tagId: tag.id });
+      if (!payload) {
+        return;
+      }
+      setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
+      setTagsByNote((prev) => {
+        const existing = prev[noteId] ?? [];
+        if (existing.some((item) => item.id === payload.tag.id)) {
+          return prev;
+        }
+        return { ...prev, [noteId]: [payload.tag, ...existing] };
       });
       await loadTagSummary();
     } catch {
@@ -322,6 +406,58 @@ export default function NotesPage() {
           rows={4}
           className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-300 focus:ring"
         />
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-slate-700">{t.createTagsLabel}</label>
+          <div className="flex gap-2">
+            <input
+              value={createTagInput}
+              onChange={(event) => setCreateTagInput(event.target.value)}
+              placeholder={t.createTagPlaceholder}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
+            />
+            <button
+              type="button"
+              onClick={() => addCreateTagName(createTagInput)}
+              className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              {t.addTag}
+            </button>
+          </div>
+          {createTagSuggestions.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {createTagSuggestions.map((tag) => (
+                <button
+                  type="button"
+                  key={tag.id}
+                  onClick={() => addCreateTagName(tag.name)}
+                  className="rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                >
+                  #{tag.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {createTagNames.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {createTagNames.map((tagName) => (
+                <span
+                  key={tagName}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+                >
+                  #{tagName}
+                  <button
+                    type="button"
+                    onClick={() => removeCreateTagName(tagName)}
+                    className="text-slate-500 hover:text-red-600"
+                    aria-label={`${t.removeTagAriaPrefix} ${tagName}`}
+                  >
+                    x
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <button
           type="submit"
           disabled={isSavingQuick}
@@ -511,6 +647,35 @@ export default function NotesPage() {
                         {t.addTag}
                       </button>
                     </div>
+                    {(() => {
+                      const query = normalizeTagName(tagInputByNote[note.id] ?? "");
+                      if (!query) {
+                        return null;
+                      }
+                      const attachedIds = new Set(tags.map((tag) => tag.id));
+                      const suggestions = tagSummary
+                        .filter((tag) => tag.name.startsWith(query) && !attachedIds.has(tag.id))
+                        .slice(0, 6);
+                      if (suggestions.length === 0) {
+                        return null;
+                      }
+                      return (
+                        <div className="flex flex-wrap gap-2">
+                          {suggestions.map((tag) => (
+                            <button
+                              key={tag.id}
+                              onClick={() => {
+                                void attachExistingTag(note.id, tag);
+                              }}
+                              disabled={tagBusyNoteId === note.id}
+                              className="rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                            >
+                              #{tag.name}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     <p className="text-xs text-slate-500">
                       {t.createdAtPrefix} {new Date(note.createdAt).toLocaleString()}

@@ -3,6 +3,8 @@ export const enMessages = {
     title: "Notes",
     subtitle: "Quick add, edit, soft delete, and manage tags for each note.",
     quickAddTitle: "Quick Add",
+    createTagsLabel: "Tags (optional)",
+    createTagPlaceholder: "Type a tag to add or pick from suggestions",
     titlePlaceholder: "Title (optional)",
     contentPlaceholder: "Write your note...",
     addNote: "Add Note",

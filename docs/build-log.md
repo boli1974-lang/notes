@@ -433,11 +433,11 @@ New work should be logged as: `Phase X — Milestone Y`.
 ### Technical Summary (what changed, which files)
 - Updated `app/review/page.tsx` to remove explicit mark-reviewed action and record review events from navigation behavior.
 - `Next` now attempts to persist a review event for the current note before moving forward.
-- Added leave-review behavior (`Back to Notes`) and page-leave handling (`pagehide` + `sendBeacon`) to persist review on exit when eligible.
+- Added page-leave handling (`pagehide` + `sendBeacon`) to persist review on exit when eligible.
 - Added minimum dwell-time guard (3 seconds) before a review event is recorded for a note.
 - Added duplicate protections in UI and backend:
   - UI single-flight request guard for in-flight review write.
-  - Service-level near-duplicate dedupe for same `noteId + userId + reviewBatchDate` within a short window.
+  - Service-level same-day dedupe for `noteId + userId + reviewBatchDate` (at most one review event per note per day).
 - Added repository helpers for review-event dedupe/count:
   - `findLatestReviewEventForNoteOnDate`
   - `countReviewEventsForNoteOnDate`
@@ -487,3 +487,58 @@ New work should be logged as: `Phase X — Milestone Y`.
 - **Root cause:** reviewed-state tracking was client-only (`reviewedNoteIdsRef`) and got reset during batch reload/re-render; UI state was not rehydrated from server truth.
 - **Fix:** `/api/review/today` now returns `reviewedNoteIds` for that review day (scoped to notes in current batch), and `app/review/page.tsx` hydrates reviewed set from payload on load.
 - **Prevention pattern:** for mutable workflow state (e.g., review completion), never rely on client-local memory alone across reload/language/navigation boundaries; always derive eligibility from server-returned authoritative state.
+
+### Behavior clarifications (accepted for Milestone 1)
+- Browser **Back** from `/review` is treated as **Exit Review** (page leave). If the current note is eligible, a review event is recorded via `sendBeacon`.
+- Dwell timing starts when a note becomes the active review item in the UI (when the current review index/note changes).
+- A review event means the user stayed on the current note for at least **3 seconds** and then left the note via **Next** or **Exit Review**.
+- Dedup rule is currently **same-day**, not time-window based: for the same `noteId + userId + reviewBatchDate`, only one event is persisted for that day.
+- Review eligibility state must be hydrated from server data (`reviewedNoteIds`) rather than relying only on client-local memory.
+
+## Phase 1 — Milestone 2 Implementation
+
+## 2026-03-06
+
+### Technical Summary (what changed, which files)
+- Implemented fast-tagging UI for note creation in `app/notes/page.tsx`:
+  - create-time tag input
+  - prefix suggestions from existing tags
+  - selected-tag chips before submit
+  - one-submit flow (create note + attach selected tags)
+- Added suggestion-driven attach support to existing per-note tag input on `/notes`.
+- Reused existing attach endpoint flow with a shared client helper in `app/notes/page.tsx` to keep behavior consistent.
+- Added UI text keys for create-time tag picker in:
+  - `lib/i18n/messages/en.ts`
+  - `lib/i18n/messages/zh.ts`
+
+### Architectural Rationale
+- Kept Milestone 2 UI-first and additive, avoiding new API/repository patterns.
+- Used existing tag APIs/services to preserve normalization and uniqueness guarantees already enforced in backend.
+- Kept implementation minimal by doing client-side prefix filtering from already-loaded tag summary data.
+
+### List of files changed
+- `app/notes/page.tsx`
+- `lib/i18n/messages/en.ts`
+- `lib/i18n/messages/zh.ts`
+- `docs/build-log.md`
+
+### Invariants involved
+- No direct Prisma usage in UI.
+- Existing soft-delete/read behavior remains unchanged.
+- Tag normalization and dedupe remain backend-enforced via existing service/repository logic.
+- API contract shape (`{ data }` / `{ error }`) remains unchanged.
+
+### What I Should Understand Conceptually
+- Milestone 2 reduces capture friction by moving tag selection into the creation flow.
+- Autocomplete can be implemented without extra backend load when current tag corpus is already available client-side.
+- “One submit” for note + tags improves UX while preserving current layering.
+
+### What Would Break If We Changed X
+- If creation flow stops attaching selected tags post-create, users fall back to a higher-friction multi-step flow.
+- If backend normalization is bypassed, duplicate semantic tags can reappear (`Work` vs `work`).
+- If suggestion filtering ignores attached tags, UI can suggest and attempt redundant attachments more often.
+
+### What To Improve Next Iteration
+- Replace per-note tag fetch pattern with a notes-with-tags API shape to reduce round trips.
+- Add keyboard navigation for suggestion list (arrow/enter) for faster accessibility.
+- Add cap/virtualization strategy if tag corpus grows large.
