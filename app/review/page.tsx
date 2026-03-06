@@ -19,6 +19,7 @@ type ReviewBatch = {
   batchId: string;
   reviewDate: string;
   notes: ReviewBatchItem[];
+  reviewedNoteIds?: string[];
 };
 
 type ApiResponse<T> = {
@@ -30,6 +31,10 @@ async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
   return (await response.json()) as ApiResponse<T>;
 }
 
+const MIN_REVIEW_DWELL_MS = 3000;
+
+type ReviewPersistResult = "saved" | "skipped" | "failed";
+
 export default function ReviewPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
@@ -39,7 +44,11 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reviewedNoteIds, setReviewedNoteIds] = useState<string[]>([]);
+  const [navigationAction, setNavigationAction] = useState<"next" | null>(null);
+  const reviewedNoteIdsRef = useRef<Set<string>>(new Set());
+  const currentNoteIdRef = useRef<string | null>(null);
+  const noteEnteredAtRef = useRef<number>(Date.now());
+  const reviewRequestInFlightRef = useRef<Promise<ReviewPersistResult> | null>(null);
 
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -58,10 +67,89 @@ export default function ReviewPage() {
     localeRef.current = locale;
   }, [locale]);
 
+  useEffect(() => {
+    const noteId = currentItem?.note.id ?? null;
+    if (currentNoteIdRef.current !== noteId) {
+      currentNoteIdRef.current = noteId;
+      noteEnteredAtRef.current = Date.now();
+    }
+  }, [currentItem]);
+
   function updateLocale(nextLocale: Locale): void {
     setLocale(nextLocale);
     persistLocale(nextLocale);
   }
+
+  function hasMetMinReviewDwell(): boolean {
+    return Date.now() - noteEnteredAtRef.current >= MIN_REVIEW_DWELL_MS;
+  }
+
+  async function persistReviewForCurrentNote(
+    options: { silent?: boolean } = {},
+  ): Promise<ReviewPersistResult> {
+    const noteId = currentNoteIdRef.current;
+    if (!noteId) {
+      return "skipped";
+    }
+    if (!hasMetMinReviewDwell()) {
+      return "skipped";
+    }
+    if (reviewedNoteIdsRef.current.has(noteId)) {
+      return "saved";
+    }
+    if (reviewRequestInFlightRef.current) {
+      return reviewRequestInFlightRef.current;
+    }
+
+    const requestPromise = (async (): Promise<ReviewPersistResult> => {
+      try {
+        const res = await fetch("/api/review/mark-reviewed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ noteId }),
+        });
+        const payload = await readJson<{ id: string }>(res);
+        if (!res.ok || !payload.data) {
+          if (!options.silent) {
+            setError(payload.error ?? getMessages(localeRef.current).review.errorMarkReviewed);
+          }
+          return "failed";
+        }
+
+        reviewedNoteIdsRef.current.add(noteId);
+        return "saved";
+      } catch {
+        if (!options.silent) {
+          setError(getMessages(localeRef.current).review.errorMarkReviewed);
+        }
+        return "failed";
+      } finally {
+        reviewRequestInFlightRef.current = null;
+      }
+    })();
+
+    reviewRequestInFlightRef.current = requestPromise;
+    return requestPromise;
+  }
+
+  const sendBeaconForCurrentNote = useCallback((): void => {
+    const noteId = currentNoteIdRef.current;
+    if (!noteId || !hasMetMinReviewDwell() || reviewedNoteIdsRef.current.has(noteId)) {
+      return;
+    }
+    if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") {
+      return;
+    }
+
+    const body = JSON.stringify({ noteId });
+    const beaconOk = navigator.sendBeacon(
+      "/api/review/mark-reviewed",
+      new Blob([body], { type: "application/json" }),
+    );
+    if (beaconOk) {
+      reviewedNoteIdsRef.current.add(noteId);
+    }
+  }, []);
 
   const loadBatch = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -76,7 +164,7 @@ export default function ReviewPage() {
       }
       setBatch(payload.data);
       setIndex(0);
-      setReviewedNoteIds([]);
+      reviewedNoteIdsRef.current = new Set<string>(payload.data.reviewedNoteIds ?? []);
       setEditing(false);
     } catch {
       setError(getMessages(localeRef.current).review.errorLoadBatch);
@@ -89,6 +177,18 @@ export default function ReviewPage() {
   useEffect(() => {
     void loadBatch();
   }, [loadBatch]);
+
+  useEffect(() => {
+    const handlePageHide = (): void => {
+      sendBeaconForCurrentNote();
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      sendBeaconForCurrentNote();
+    };
+  }, [sendBeaconForCurrentNote]);
 
   function beginEdit(): void {
     if (!currentItem) {
@@ -168,31 +268,26 @@ export default function ReviewPage() {
     }
   }
 
-  async function markReviewed(): Promise<void> {
+  async function goNextAndRecordReview(): Promise<void> {
     if (!currentItem) {
       return;
     }
+    if (index >= total - 1) {
+      return;
+    }
+
     setBusy(true);
+    setNavigationAction("next");
     setError(null);
     try {
-      const res = await fetch("/api/review/mark-reviewed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ noteId: currentItem.note.id }),
-      });
-      const payload = await readJson<{ id: string }>(res);
-      if (!res.ok || !payload.data) {
-        setError(payload.error ?? t.errorMarkReviewed);
+      const result = await persistReviewForCurrentNote();
+      if (result === "failed") {
         return;
       }
-
-      setReviewedNoteIds((prev) =>
-        prev.includes(currentItem.note.id) ? prev : [...prev, currentItem.note.id],
-      );
-    } catch {
-      setError(t.errorMarkReviewed);
+      setIndex((prev) => Math.min(total - 1, prev + 1));
     } finally {
       setBusy(false);
+      setNavigationAction(null);
     }
   }
 
@@ -219,15 +314,13 @@ export default function ReviewPage() {
           onClick={() => {
             void loadBatch();
           }}
+          disabled={busy || loading}
           className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
         >
           {t.refreshBatch}
         </button>
         <span className="text-sm text-slate-600">
           {t.progress}: {total === 0 ? "0/0" : `${Math.min(index + 1, total)}/${total}`}
-        </span>
-        <span className="text-sm text-slate-600">
-          {t.reviewed}: {reviewedNoteIds.length}
         </span>
       </div>
 
@@ -288,16 +381,8 @@ export default function ReviewPage() {
 
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => {
-                    void markReviewed();
-                  }}
-                  disabled={busy}
-                  className="rounded-md bg-slate-800 px-3 py-2 text-sm text-white hover:bg-slate-700 disabled:opacity-60"
-                >
-                  {t.markReviewed}
-                </button>
-                <button
                   onClick={beginEdit}
+                  disabled={busy}
                   className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 >
                   {t.edit}
@@ -318,17 +403,19 @@ export default function ReviewPage() {
           <div className="flex justify-between gap-2 border-t border-slate-200 pt-3">
             <button
               onClick={() => setIndex((prev) => Math.max(0, prev - 1))}
-              disabled={index <= 0}
+              disabled={index <= 0 || busy}
               className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               {t.prev}
             </button>
             <button
-              onClick={() => setIndex((prev) => Math.min(total - 1, prev + 1))}
-              disabled={index >= total - 1}
+              onClick={() => {
+                void goNextAndRecordReview();
+              }}
+              disabled={index >= total - 1 || busy}
               className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              {t.next}
+              {navigationAction === "next" ? t.savingReview : t.next}
             </button>
           </div>
         </div>

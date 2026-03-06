@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { hardDeleteReviewDataByBatchId } from "@/lib/repositories/reviewRepo";
+import {
+  countReviewEventsForNoteOnDate,
+  hardDeleteReviewDataByBatchId,
+} from "@/lib/repositories/reviewRepo";
 import { hardDeleteNote } from "@/lib/services/noteService";
 import { hardDeleteTag } from "@/lib/services/tagService";
 
@@ -16,6 +19,8 @@ type NoteResponse = {
 
 type ReviewTodayResponse = {
   batchId: string;
+  reviewDate: string;
+  reviewedNoteIds?: string[];
   notes: Array<{ position: number; note: { id: string } }>;
 };
 
@@ -45,6 +50,10 @@ function assert(condition: unknown, message: string): asserts condition {
 
 async function parseJson<T>(response: Response): Promise<ApiResult<T>> {
   return (await response.json()) as ApiResult<T>;
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
 async function main(): Promise<void> {
@@ -251,24 +260,59 @@ async function main(): Promise<void> {
     const firstBatchIds = today1.data.notes.map((item) => item.note.id);
     pass("fetched daily review batch via API");
 
-    const markRes = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
+    const firstNoteId = firstBatchIds[0];
+    const prevOnlyNoteId = firstBatchIds[1];
+    const exitReviewNoteId = firstBatchIds[2];
+    const reviewDay = startOfUtcDay(new Date());
+
+    const prevOnlyCountBefore = await countReviewEventsForNoteOnDate(prevOnlyNoteId, reviewDay, userId);
+    assert(prevOnlyCountBefore === 0, "note with no record-review call should have 0 events");
+    pass("prev-only note has no review event when record endpoint is not called");
+
+    const firstReviewTime = new Date();
+    const sameDaySecondReviewTime = new Date(firstReviewTime.getTime() + 2 * 60 * 60 * 1000);
+
+    const recordRes1 = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ noteId: firstBatchIds[0], userId }),
+      body: JSON.stringify({ noteId: firstNoteId, reviewedAt: firstReviewTime.toISOString(), userId }),
     });
-    assert(markRes.status === 201, "mark-reviewed should return 201");
-    pass("marked note reviewed via API");
+    assert(recordRes1.status === 201, "record review event should return 201");
+    pass("recorded review event via API");
+
+    const recordRes2 = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ noteId: firstNoteId, reviewedAt: sameDaySecondReviewTime.toISOString(), userId }),
+    });
+    assert(recordRes2.status === 201, "same-day second record review event should still return 201");
+
+    const dedupedFirstCount = await countReviewEventsForNoteOnDate(firstNoteId, reviewDay, userId);
+    assert(dedupedFirstCount === 1, "same-day review event writes should dedupe to one event");
+    pass("same-day review event writes are deduplicated to one event");
 
     const invalidMarkReviewedPayloadRes = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ noteId: firstBatchIds[0], reviewedAt: 123, userId }),
+      body: JSON.stringify({ noteId: firstNoteId, reviewedAt: 123, userId }),
     });
     assert(
       invalidMarkReviewedPayloadRes.status === 400,
-      "invalid mark-reviewed payload should return 400",
+      "invalid record-review-event payload should return 400",
     );
-    pass("invalid mark-reviewed payload is rejected with 4xx");
+    pass("invalid record-review-event payload is rejected with 4xx");
+
+    // Simulate "last note has no Next": user exits review from last note.
+    const exitReviewRecordRes = await fetch(`${baseUrl}/api/review/mark-reviewed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ noteId: exitReviewNoteId, reviewedAt: new Date().toISOString(), userId }),
+    });
+    assert(exitReviewRecordRes.status === 201, "record review event for last note (exit-review simulation) should return 201");
+
+    const exitReviewCount = await countReviewEventsForNoteOnDate(exitReviewNoteId, reviewDay, userId);
+    assert(exitReviewCount === 1, "last note should have one review event in exit-review simulation");
+    pass("last note review event is recorded in exit-review simulation");
 
     const todayRes2 = await fetch(
       `${baseUrl}/api/review/today?userId=${encodeURIComponent(userId)}&batchSize=3`,
@@ -282,9 +326,24 @@ async function main(): Promise<void> {
     assert(today1.data.batchId === today2.data.batchId, "same-day batch id should be stable");
     assert(
       JSON.stringify(firstBatchIds) === JSON.stringify(secondBatchIds),
-      "mark-reviewed should not reshuffle today's batch",
+      "recording review events should not reshuffle today's batch",
     );
-    pass("review batch remains stable after mark-reviewed");
+    pass("review batch remains stable after recording review events");
+
+    const reviewedFromToday = new Set(today2.data.reviewedNoteIds ?? []);
+    assert(
+      reviewedFromToday.has(firstNoteId),
+      "today batch response should include first note in reviewedNoteIds after recording",
+    );
+    assert(
+      reviewedFromToday.has(exitReviewNoteId),
+      "today batch response should include exit-review note in reviewedNoteIds after recording",
+    );
+    pass("today batch response includes reviewed note ids");
+
+    const prevOnlyCountAfter = await countReviewEventsForNoteOnDate(prevOnlyNoteId, reviewDay, userId);
+    assert(prevOnlyCountAfter === 0, "prev-only note should remain at 0 events");
+    pass("prev-only note still has no review event");
 
     pass("API smoke test completed");
   } finally {

@@ -1,9 +1,18 @@
-# Phase 1 Implementation
+# Build Log — Naming Convention
+
+- **Stage 0–5**: MVP build stages (foundation → data → services → API → UI → deploy)
+- **Phase N**: Post-MVP product phases
+- **Milestone N**: A shippable unit inside a Product Phase
+
+Historical MVP entries below are labeled as **Stages**.
+New work should be logged as: `Phase X — Milestone Y`.
+
+# Stage 1 Implementation
 
 ## 2026-02-24
 
 ### Technical Summary (what changed, which files)
-- Implemented Phase 1 note data access with typed CRUD, soft-delete defaults, optional restore/hard delete, and optional `userId` scoping in `lib/repositories/noteRepository.ts`.
+- Implemented Stage 1 note data access with typed CRUD, soft-delete defaults, optional restore/hard delete, and optional `userId` scoping in `lib/repositories/noteRepository.ts`.
 - Added Prisma fail-fast env handling in `prisma.config.ts` so `DATABASE_URL` is validated at startup and typed as `string`.
 - Added a minimal repository smoke script in `scripts/smoke-note-repo.ts` for create/read/list/soft-delete/restore checks.
 - Confirmed schema supports soft delete and multi-user readiness (`deletedAt`, nullable `userId`) in `prisma/schema.prisma`.
@@ -47,7 +56,7 @@
 - Implement `tagRepository` and `reviewRepository` concrete methods (currently skeletons).
 - Start service layer (`noteService`, `reviewService`) and keep all non-trivial rules there.
 
-## Phase 2 Implementation
+## Stage 2 Implementation
 
 ## 2026-02-28
 
@@ -63,7 +72,7 @@
 ### Architectural Rationale
 - Kept domain logic in services (`reviewService`) and DB calls in repositories (`noteRepository`, `reviewRepo`) per layered rules.
 - Preserved repository responsibility as persistence-only; services orchestrate repository calls.
-- Added smoke scripts at service layer to verify Phase 2 invariants with minimal tooling.
+- Added smoke scripts at service layer to verify Stage 2 invariants with minimal tooling.
 
 ### List of files changed
 - `package.json`
@@ -95,7 +104,7 @@
 - Add tag/review repository completeness and a cohesive `noteService` orchestration with tags.
 - Add API/server-actions layer that calls services only (no direct repo from routes/components).
 
-## Phase 3 Implementation
+## Stage 3 Implementation
 
 ## 2026-03-01
 
@@ -145,7 +154,7 @@
 - Standardize API error schema across all routes (`code` + `message`).
 - Add lightweight API contract tests for edge validation cases.
 
-## Phase 3.1 Implementation
+## Stage 3.1 Implementation
 
 ## 2026-03-01
 
@@ -194,7 +203,7 @@
 - Add note listing by `tagId` filter endpoint support.
 - Consolidate API error payload to include stable error codes.
 
-## Phase 3.2 Implementation
+## Stage 3.2 Implementation
 
 ## 2026-03-02
 
@@ -207,7 +216,7 @@
 - Kept runtime endpoint behavior unchanged; this iteration focuses on API contract verification depth.
 
 ### Architectural Rationale
-- Strengthened Phase 3 error-handling strategy using smoke-level contract checks instead of adding new runtime pathways.
+- Strengthened Stage 3 error-handling strategy using smoke-level contract checks instead of adding new runtime pathways.
 - Preserved thin route boundaries and service/repository layering while improving confidence in 4xx behavior.
 
 ### List of files changed
@@ -231,7 +240,7 @@
 - Add shared helper utilities for route validation/error mapping to reduce repeated code.
 - Add API contract tests for not-found and conflict cases (beyond payload validation).
 
-## Phase 4 Implementation
+## Stage 4 Implementation
 
 ## 2026-03-02
 
@@ -263,7 +272,7 @@
 - API routes continue to call services only (no direct Prisma in routes outside repository layer).
 
 ### What I Should Understand Conceptually
-- UI is now a thin client of the API surface built in Phase 3.
+- UI is now a thin client of the API surface built in Stage 3.
 - Note-tag rendering needs both note list and per-note tag association reads.
 - Review UI state tracks client navigation/progress while server preserves batch invariants.
 
@@ -275,9 +284,9 @@
 ### What To Improve Next Iteration
 - Add a dedicated API shape for notes-with-tags to avoid N+1 fetches from the notes page.
 - Add lightweight loading/error UI states per card action (edit/tag/delete) for finer feedback.
-- Start Phase 4.2 enhancements: i18n extraction and tag count/filter support.
+- Start Stage 4.2 enhancements: i18n extraction and tag count/filter support.
 
-## Phase 4.2 Implementation
+## Stage 4.2 Implementation
 
 ## 2026-03-02
 
@@ -338,7 +347,7 @@
 - Replace per-note tag fetches with a notes-with-tags API shape to reduce network round trips.
 - Add optional tag count display in more UI surfaces (e.g., review context, filters summary).
 
-## Phase 4.3 Implementation
+## Stage 4.3 Implementation
 
 ## 2026-03-02
 
@@ -355,7 +364,7 @@
 
 ### Architectural Rationale
 - Kept i18n concerns centralized in `lib/i18n` rather than scattering locale logic in pages.
-- Used localStorage persistence for Phase 1 simplicity and zero backend coupling.
+- Used localStorage persistence for Stage 1 simplicity and zero backend coupling.
 - Implemented locale switch so it updates UI copy without forcing notes/review data reload semantics.
 
 ### Invariants involved
@@ -371,14 +380,14 @@
 - Add optional server-side locale preference source when authentication exists.
 - Add locale-aware date/time formatting for created/review timestamps.
 
-## Phase 5 Implementation
+## Stage 5 Implementation
 
 ## 2026-03-03
 
 ### Technical Summary (what changed, which files)
 - Added and filled stability/deployment gate checklist:
   - `docs/quality-gates.md`
-- Ran Phase 5 gates:
+- Ran Stage 5 gates:
   - `npx tsc --noEmit` (pass)
   - `npm run lint` (pass)
   - `npm run dev` runtime check (pass)
@@ -387,7 +396,7 @@
   - `lib/i18n/index.ts` (widened message value typing while preserving key-shape safety)
 
 ### Architectural Rationale
-- Kept Phase 5 focused on verification and release readiness, not feature growth.
+- Kept Stage 5 focused on verification and release readiness, not feature growth.
 - Captured gate outcomes and blockers explicitly so deployment decisions are evidence-based.
 
 ### List of files changed
@@ -402,7 +411,7 @@
 - i18n centralization unchanged; only type safety corrected.
 
 ### What I Should Understand Conceptually
-- Phase 5 is primarily about confidence gates and operational readiness.
+- Stage 5 is primarily about confidence gates and operational readiness.
 - Runtime/smoke failures can surface environment constraints distinct from code defects; re-running after network stabilization is part of release readiness.
 
 ### What Would Break If We Changed X
@@ -415,4 +424,66 @@
 
 ### MVP Launch Note
 - MVP is now live in production at `https://notes-nine-azure.vercel.app
-- Phase 0 through Phase 5 exit criteria are satisfied for current single-user scope.
+- Stage 0 through Stage 5 exit criteria are satisfied for current single-user scope.
+
+## Phase 1 — Milestone 1 Implementation
+
+## 2026-03-05
+
+### Technical Summary (what changed, which files)
+- Updated `app/review/page.tsx` to remove explicit mark-reviewed action and record review events from navigation behavior.
+- `Next` now attempts to persist a review event for the current note before moving forward.
+- Added leave-review behavior (`Back to Notes`) and page-leave handling (`pagehide` + `sendBeacon`) to persist review on exit when eligible.
+- Added minimum dwell-time guard (3 seconds) before a review event is recorded for a note.
+- Added duplicate protections in UI and backend:
+  - UI single-flight request guard for in-flight review write.
+  - Service-level near-duplicate dedupe for same `noteId + userId + reviewBatchDate` within a short window.
+- Added repository helpers for review-event dedupe/count:
+  - `findLatestReviewEventForNoteOnDate`
+  - `countReviewEventsForNoteOnDate`
+- Extended `scripts/smoke-api.ts` to verify duplicate review-write requests dedupe to one stored event.
+- Updated review i18n messages in:
+  - `lib/i18n/messages/en.ts`
+  - `lib/i18n/messages/zh.ts`
+
+### Architectural Rationale
+- Kept review interaction changes in UI while preserving existing API/service boundaries.
+- Kept write correctness in service/repository layer (dedupe) instead of relying solely on client behavior.
+- Maintained stable endpoint contracts and response envelope to keep rollout low risk.
+
+### List of files changed
+- `app/review/page.tsx`
+- `lib/services/reviewService.ts`
+- `lib/repositories/reviewRepo.ts`
+- `scripts/smoke-api.ts`
+- `lib/i18n/messages/en.ts`
+- `lib/i18n/messages/zh.ts`
+- `docs/build-log.md`
+
+### Invariants involved
+- Same-day review batch stability remains unchanged.
+- Prev navigation does not create review events.
+- Soft-deleted note protections remain unchanged.
+- No Prisma access was introduced outside repositories.
+- API response envelope remains `{ data }` / `{ error }`.
+
+### What I Should Understand Conceptually
+- Milestone 1 changes review semantics from explicit action to inferred action on navigation away from a note.
+- Reliable behavior needs layered guards: UI pending-state prevention + backend dedupe.
+- Dwell threshold reduces false positives for accidental, very brief visits.
+
+### What Would Break If We Changed X
+- Removing dedupe allows duplicate review events from rapid repeated submits/retries.
+- Removing dwell threshold can over-count short accidental views as completed reviews.
+- Removing leave-page handling can miss review writes when user exits review without clicking Next.
+
+### What To Improve Next Iteration
+- Add first-class idempotency keys for review-write requests.
+- Add focused tests for dwell threshold edge boundaries and Prev no-write behavior.
+- Consider making dwell threshold configurable after usage data is observed.
+
+### Post-QA issue note (manual regression found and fixed)
+- **Symptom:** after refreshing review batch or switching locale, some notes that were already reviewed appeared eligible to be recorded again in UI.
+- **Root cause:** reviewed-state tracking was client-only (`reviewedNoteIdsRef`) and got reset during batch reload/re-render; UI state was not rehydrated from server truth.
+- **Fix:** `/api/review/today` now returns `reviewedNoteIds` for that review day (scoped to notes in current batch), and `app/review/page.tsx` hydrates reviewed set from payload on load.
+- **Prevention pattern:** for mutable workflow state (e.g., review completion), never rely on client-local memory alone across reload/language/navigation boundaries; always derive eligibility from server-returned authoritative state.

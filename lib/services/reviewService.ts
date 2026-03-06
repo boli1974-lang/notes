@@ -1,11 +1,14 @@
 import type { Note, ReviewEvent } from "@prisma/client";
 import { getNoteById, listNotes } from "@/lib/repositories/noteRepository";
 import {
+  countReviewEventsForNoteOnDate,
   createReviewBatch,
   createReviewBatchItems,
   createReviewEvent,
   findBatchItemsByBatchId,
+  findLatestReviewEventForNoteOnDate,
   findReviewBatchByDate,
+  findReviewedNoteIdsOnDate,
   findReviewedNoteIdsSince,
 } from "@/lib/repositories/reviewRepo";
 
@@ -108,5 +111,29 @@ export async function markNoteReviewed(
   }
 
   const reviewBatchDate = startOfUtcDay(reviewedAt);
+  const latestForDay = await findLatestReviewEventForNoteOnDate(noteId, reviewBatchDate, userId);
+  if (latestForDay) {
+    // Milestone 1 semantics: at most one review event per note per day.
+    return latestForDay;
+  }
+
   return createReviewEvent(noteId, reviewedAt, reviewBatchDate, userId);
+}
+
+export async function countReviewEventsForNoteAndDay(
+  noteId: string,
+  reviewedAt: Date,
+  userId?: string,
+): Promise<number> {
+  const reviewBatchDate = startOfUtcDay(reviewedAt);
+  return countReviewEventsForNoteOnDate(noteId, reviewBatchDate, userId);
+}
+
+export async function listReviewedNoteIdsForDate(
+  reviewDate: Date,
+  userId?: string,
+  noteIds?: string[],
+): Promise<string[]> {
+  const normalizedDate = startOfUtcDay(reviewDate);
+  return findReviewedNoteIdsOnDate(normalizedDate, userId, noteIds);
 }

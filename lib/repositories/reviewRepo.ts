@@ -85,6 +85,35 @@ export async function createReviewEvent(
   });
 }
 
+export async function findLatestReviewEventForNoteOnDate(
+  noteId: string,
+  reviewBatchDate: Date,
+  userId?: string,
+): Promise<ReviewEvent | null> {
+  return prisma.reviewEvent.findFirst({
+    where: {
+      noteId,
+      reviewBatchDate,
+      userId: userId ?? null,
+    },
+    orderBy: { reviewedAt: "desc" },
+  });
+}
+
+export async function countReviewEventsForNoteOnDate(
+  noteId: string,
+  reviewBatchDate: Date,
+  userId?: string,
+): Promise<number> {
+  return prisma.reviewEvent.count({
+    where: {
+      noteId,
+      reviewBatchDate,
+      userId: userId ?? null,
+    },
+  });
+}
+
 export async function findReviewedNoteIdsSince(
   since: Date,
   userId?: string,
@@ -92,6 +121,24 @@ export async function findReviewedNoteIdsSince(
   const events = await prisma.reviewEvent.findMany({
     where: {
       reviewedAt: { gte: since },
+      ...withOptionalUserWhere(userId),
+    },
+    select: { noteId: true },
+    distinct: ["noteId"],
+  });
+
+  return events.map((event) => event.noteId);
+}
+
+export async function findReviewedNoteIdsOnDate(
+  reviewBatchDate: Date,
+  userId?: string,
+  noteIds?: string[],
+): Promise<string[]> {
+  const events = await prisma.reviewEvent.findMany({
+    where: {
+      reviewBatchDate,
+      ...(noteIds && noteIds.length > 0 ? { noteId: { in: noteIds } } : {}),
       ...withOptionalUserWhere(userId),
     },
     select: { noteId: true },

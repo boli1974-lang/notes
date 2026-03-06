@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getOrCreateTodayBatch } from "@/lib/services/reviewService";
+import { getOrCreateTodayBatch, listReviewedNoteIdsForDate } from "@/lib/services/reviewService";
 
 function badRequest(message: string): NextResponse {
   return NextResponse.json({ error: message }, { status: 400 });
@@ -30,7 +30,18 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
 
     const batch = await getOrCreateTodayBatch({ userId, batchSize, now });
-    return NextResponse.json({ data: batch });
+    const reviewedNoteIds = await listReviewedNoteIdsForDate(
+      batch.reviewDate,
+      userId,
+      batch.notes.map((item) => item.note.id),
+    );
+
+    return NextResponse.json({
+      data: {
+        ...batch,
+        reviewedNoteIds,
+      },
+    });
   } catch {
     return NextResponse.json({ error: "Failed to fetch review batch." }, { status: 500 });
   }
