@@ -63,6 +63,23 @@ function startOfUtcDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
+async function attachTagByName(
+  baseUrl: string,
+  noteId: string,
+  tagName: string,
+  userId: string,
+): Promise<TagResponse> {
+  const res = await fetch(`${baseUrl}/api/notes/${noteId}/tags`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tagName, userId }),
+  });
+  const payload = await parseJson<{ tag: TagResponse }>(res);
+  assert(res.status === 201, "attach tag by name should return 201");
+  assert(payload.data?.tag.id, "attach tag by name should return tag");
+  return payload.data.tag;
+}
+
 async function main(): Promise<void> {
   const baseUrl = process.env.API_BASE_URL ?? "http://localhost:3000";
   const marker = `smoke-api-${Date.now()}`;
@@ -101,6 +118,78 @@ async function main(): Promise<void> {
     const getRes = await fetch(`${baseUrl}/api/notes/${noteId}?userId=${encodeURIComponent(userId)}`);
     assert(getRes.status === 200, "get note should return 200");
     pass("fetched note by id via API");
+
+    const createComposerRes = await fetch(`${baseUrl}/api/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: `${marker}-composer`, content: `composer-${marker}`, userId }),
+    });
+    assert(createComposerRes.status === 201, "create composer note should return 201");
+    const createComposerPayload = await parseJson<NoteResponse>(createComposerRes);
+    assert(createComposerPayload.data?.id, "create composer note should return note data");
+    const composerNoteId = createComposerPayload.data.id;
+    createdNoteIds.push(composerNoteId);
+
+    const createExistingSemicolonTagRes = await fetch(`${baseUrl}/api/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `${tagMarker}-existing-semicolon`, userId }),
+    });
+    assert(createExistingSemicolonTagRes.status === 201, "create existing semicolon tag should return 201");
+    const createExistingSemicolonTagPayload = await parseJson<TagResponse>(createExistingSemicolonTagRes);
+    assert(createExistingSemicolonTagPayload.data?.id, "create existing semicolon tag should return tag data");
+    const existingSemicolonTag = createExistingSemicolonTagPayload.data;
+    createdTagIds.push(existingSemicolonTag.id);
+
+    // Milestone 4: simulate semicolon multi-tag input in one continuous create flow.
+    // UI parses semicolon input then sends attach requests for each token.
+    const semicolonTagInput = `${existingSemicolonTag.name}; ${tagMarker}-s1; ${tagMarker}-s2; ${existingSemicolonTag.name}; ${tagMarker}-s1`;
+    const parsedSemicolonNames = Array.from(
+      new Set(
+        semicolonTagInput
+          .split(";")
+          .map((part) => part.trim().toLowerCase())
+          .filter((part) => part.length > 0),
+      ),
+    );
+    const semicolonAttachedTags = await Promise.all(
+      parsedSemicolonNames.map((tagName) => attachTagByName(baseUrl, composerNoteId, tagName, userId)),
+    );
+    for (const tag of semicolonAttachedTags) {
+      if (!createdTagIds.includes(tag.id)) {
+        createdTagIds.push(tag.id);
+      }
+    }
+
+    const listComposerTagsRes = await fetch(
+      `${baseUrl}/api/notes/${composerNoteId}/tags?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(listComposerTagsRes.status === 200, "list composer note tags should return 200");
+    const listComposerTagsPayload = await parseJson<TagResponse[]>(listComposerTagsRes);
+    assert(
+      listComposerTagsPayload.data?.length === parsedSemicolonNames.length,
+      "semicolon duplicate entries should not create duplicate attachments",
+    );
+    for (const tagName of parsedSemicolonNames) {
+      assert(
+        listComposerTagsPayload.data?.some((tag) => tag.name === tagName),
+        "composer note should include each semicolon-parsed tag",
+      );
+    }
+    assert(
+      listComposerTagsPayload.data?.some((tag) => tag.id === existingSemicolonTag.id),
+      "semicolon flow should reuse pre-existing tag when included",
+    );
+
+    const listTagsAfterSemicolonRes = await fetch(
+      `${baseUrl}/api/tags?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(listTagsAfterSemicolonRes.status === 200, "list tags after semicolon flow should return 200");
+    const listTagsAfterSemicolonPayload = await parseJson<TagResponse[]>(listTagsAfterSemicolonRes);
+    const existingSemicolonTagCount =
+      listTagsAfterSemicolonPayload.data?.filter((tag) => tag.name === existingSemicolonTag.name).length ?? 0;
+    assert(existingSemicolonTagCount === 1, "semicolon flow should not create duplicate existing tag records");
+    pass("create note + mixed existing/new semicolon flow is supported with dedupe");
 
     const invalidNoteIdRes = await fetch(`${baseUrl}/api/notes/not-a-uuid`);
     assert(invalidNoteIdRes.status === 400, "invalid note id path should return 400");
@@ -364,6 +453,57 @@ async function main(): Promise<void> {
     const prevOnlyCountBefore = await countReviewEventsForNoteOnDate(prevOnlyNoteId, reviewDay, userId);
     assert(prevOnlyCountBefore === 0, "note with no record-review call should have 0 events");
     pass("prev-only note has no review event when record endpoint is not called");
+
+    // Milestone 4: review edit-mode equivalent API checks.
+    const reviewEditPatchRes = await fetch(`${baseUrl}/api/notes/${prevOnlyNoteId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: `${marker}-review-edited`,
+        content: `review-edited-${marker}`,
+        userId,
+      }),
+    });
+    assert(reviewEditPatchRes.status === 200, "review-edit equivalent PATCH should return 200");
+
+    const reviewEditSemicolonInput = `${tagMarker}-re1; ${tagMarker}-re2`;
+    const reviewEditTagNames = reviewEditSemicolonInput
+      .split(";")
+      .map((part) => part.trim().toLowerCase())
+      .filter((part) => part.length > 0);
+    const reviewEditAttachedTags = await Promise.all(
+      reviewEditTagNames.map((tagName) => attachTagByName(baseUrl, prevOnlyNoteId, tagName, userId)),
+    );
+    for (const tag of reviewEditAttachedTags) {
+      createdTagIds.push(tag.id);
+    }
+
+    const reviewDetachRes = await fetch(
+      `${baseUrl}/api/notes/${prevOnlyNoteId}/tags/${reviewEditAttachedTags[0].id}?userId=${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    assert(reviewDetachRes.status === 200, "review-edit equivalent detach should return 200");
+
+    const reviewEditTagsRes = await fetch(
+      `${baseUrl}/api/notes/${prevOnlyNoteId}/tags?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(reviewEditTagsRes.status === 200, "list review-edit tags should return 200");
+    const reviewEditTagsPayload = await parseJson<TagResponse[]>(reviewEditTagsRes);
+    assert(
+      !reviewEditTagsPayload.data?.some((tag) => tag.id === reviewEditAttachedTags[0].id),
+      "detached review-edit tag should be removed",
+    );
+    assert(
+      reviewEditTagsPayload.data?.some((tag) => tag.id === reviewEditAttachedTags[1].id),
+      "remaining review-edit tag should stay attached",
+    );
+
+    const prevOnlyCountAfterEditOps = await countReviewEventsForNoteOnDate(prevOnlyNoteId, reviewDay, userId);
+    assert(
+      prevOnlyCountAfterEditOps === 0,
+      "editing title/content/tags in review equivalent flow should not auto-record review event",
+    );
+    pass("review-edit equivalent tag attach/detach works and does not auto-record review");
 
     const firstReviewTime = new Date();
     const sameDaySecondReviewTime = new Date(firstReviewTime.getTime() + 2 * 60 * 60 * 1000);

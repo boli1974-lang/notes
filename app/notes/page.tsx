@@ -45,6 +45,30 @@ function isTagNameTooLong(normalizedTagName: string): boolean {
   return normalizedTagName.length > TAG_NAME_MAX_LENGTH;
 }
 
+function getActiveTagToken(rawInput: string): string {
+  const segments = rawInput.split(";");
+  return normalizeTagName(segments[segments.length - 1] ?? "");
+}
+
+function parseNormalizedTagNames(rawInput: string): { tagNames: string[]; hasTooLongTag: boolean } {
+  const deduped = new Set<string>();
+  let hasTooLongTag = false;
+
+  for (const segment of rawInput.split(";")) {
+    const normalized = normalizeTagName(segment);
+    if (!normalized) {
+      continue;
+    }
+    if (isTagNameTooLong(normalized)) {
+      hasTooLongTag = true;
+      continue;
+    }
+    deduped.add(normalized);
+  }
+
+  return { tagNames: Array.from(deduped), hasTooLongTag };
+}
+
 export default function NotesPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
@@ -108,7 +132,7 @@ export default function NotesPage() {
     [selectedTagId, tagSummary],
   );
   const createTagSuggestions = useMemo(() => {
-    const query = normalizeTagName(createTagInput);
+    const query = getActiveTagToken(createTagInput);
     if (isTagNameTooLong(query)) {
       return [];
     }
@@ -121,7 +145,7 @@ export default function NotesPage() {
       .slice(0, 6);
   }, [createTagInput, createTagNames, tagSummary]);
   const createTagInputNormalized = useMemo(
-    () => normalizeTagName(createTagInput),
+    () => getActiveTagToken(createTagInput),
     [createTagInput],
   );
   const isCreateTagInputTooLong = useMemo(
@@ -200,15 +224,21 @@ export default function NotesPage() {
   }, [pendingDeletedNote]);
 
   function addCreateTagName(rawTag: string): void {
-    const normalized = normalizeTagName(rawTag);
-    if (!normalized) {
+    const { tagNames, hasTooLongTag } = parseNormalizedTagNames(rawTag);
+    if (tagNames.length === 0 && !hasTooLongTag) {
       return;
     }
-    if (isTagNameTooLong(normalized)) {
+    if (hasTooLongTag) {
       setError(t.errorTagTooLong);
       return;
     }
-    setCreateTagNames((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    setCreateTagNames((prev) => {
+      const deduped = new Set(prev);
+      for (const tagName of tagNames) {
+        deduped.add(tagName);
+      }
+      return Array.from(deduped);
+    });
     setCreateTagInput("");
   }
 
@@ -219,7 +249,7 @@ export default function NotesPage() {
   async function attachTagToNote(
     noteId: string,
     input: { tagId?: string; tagName?: string },
-  ): Promise<{ tag: Tag } | null> {
+  ): Promise<{ tag: Tag }> {
     const res = await fetch(`/api/notes/${noteId}/tags`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -256,15 +286,15 @@ export default function NotesPage() {
         return;
       }
 
-      const pendingTagFromInput = normalizeTagName(createTagInput);
-      if (pendingTagFromInput && isTagNameTooLong(pendingTagFromInput)) {
+      const parsedInput = parseNormalizedTagNames(createTagInput);
+      if (parsedInput.hasTooLongTag) {
         setError(t.errorTagTooLong);
         return;
       }
       const tagsToAttach = Array.from(
         new Set([
           ...createTagNames,
-          ...(pendingTagFromInput ? [pendingTagFromInput] : []),
+          ...parsedInput.tagNames,
         ]),
       );
       if (payload.data?.id && tagsToAttach.length > 0) {
@@ -390,11 +420,11 @@ export default function NotesPage() {
   }
 
   async function attachTag(noteId: string): Promise<void> {
-    const tagName = normalizeTagName(tagInputByNote[noteId] ?? "");
-    if (!tagName) {
+    const parsedInput = parseNormalizedTagNames(tagInputByNote[noteId] ?? "");
+    if (parsedInput.tagNames.length === 0 && !parsedInput.hasTooLongTag) {
       return;
     }
-    if (isTagNameTooLong(tagName)) {
+    if (parsedInput.hasTooLongTag) {
       setError(t.errorTagTooLong);
       return;
     }
@@ -402,19 +432,20 @@ export default function NotesPage() {
     setTagBusyNoteId(noteId);
     setError(null);
     try {
-      const payload = await attachTagToNote(noteId, { tagName });
-      if (!payload) {
-        return;
-      }
-      const attachedTag = payload.tag;
+      const attachedPayloads = await Promise.all(
+        parsedInput.tagNames.map((tagName) => attachTagToNote(noteId, { tagName })),
+      );
+      const attachedTags = attachedPayloads.map((payload) => payload.tag);
 
       setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
       setTagsByNote((prev) => {
         const existing = prev[noteId] ?? [];
-        if (existing.some((tag) => tag.id === attachedTag.id)) {
+        const existingIds = new Set(existing.map((tag) => tag.id));
+        const nextAdded = attachedTags.filter((tag) => !existingIds.has(tag.id));
+        if (nextAdded.length === 0) {
           return prev;
         }
-        return { ...prev, [noteId]: [attachedTag, ...existing] };
+        return { ...prev, [noteId]: [...nextAdded, ...existing] };
       });
       await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
@@ -429,9 +460,6 @@ export default function NotesPage() {
     setError(null);
     try {
       const payload = await attachTagToNote(noteId, { tagId: tag.id });
-      if (!payload) {
-        return;
-      }
       setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
       setTagsByNote((prev) => {
         const existing = prev[noteId] ?? [];
@@ -526,13 +554,13 @@ export default function NotesPage() {
         />
         <div className="space-y-2">
           <label className="block text-xs font-medium text-slate-700">{t.createTagsLabel}</label>
+          <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
           <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
           <div className="flex gap-2">
             <input
               value={createTagInput}
               onChange={(event) => setCreateTagInput(event.target.value)}
               placeholder={t.createTagPlaceholder}
-              maxLength={TAG_NAME_MAX_LENGTH}
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
             />
             <button
@@ -813,7 +841,7 @@ export default function NotesPage() {
 
                     <div className="flex flex-col gap-2 sm:flex-row">
                       {(() => {
-                        const normalizedInput = normalizeTagName(tagInputByNote[note.id] ?? "");
+                        const normalizedInput = getActiveTagToken(tagInputByNote[note.id] ?? "");
                         const isTooLong = isTagNameTooLong(normalizedInput);
                         return (
                           <>
@@ -823,7 +851,6 @@ export default function NotesPage() {
                                 setTagInputByNote((prev) => ({ ...prev, [note.id]: event.target.value }))
                               }
                               placeholder={t.addTagPlaceholder}
-                              maxLength={TAG_NAME_MAX_LENGTH}
                               className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
                             />
                             <button
@@ -839,16 +866,17 @@ export default function NotesPage() {
                         );
                       })()}
                     </div>
+                    <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
                     <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
                     {(() => {
-                      const normalizedInput = normalizeTagName(tagInputByNote[note.id] ?? "");
+                      const normalizedInput = getActiveTagToken(tagInputByNote[note.id] ?? "");
                       if (!isTagNameTooLong(normalizedInput)) {
                         return null;
                       }
                       return <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>;
                     })()}
                     {(() => {
-                      const query = normalizeTagName(tagInputByNote[note.id] ?? "");
+                      const query = getActiveTagToken(tagInputByNote[note.id] ?? "");
                       if (!query || isTagNameTooLong(query)) {
                         return null;
                       }

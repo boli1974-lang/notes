@@ -22,6 +22,11 @@ type ReviewBatch = {
   reviewedNoteIds?: string[];
 };
 
+type Tag = {
+  id: string;
+  name: string;
+};
+
 type ApiResponse<T> = {
   data?: T;
   error?: string;
@@ -32,8 +37,41 @@ async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
 }
 
 const MIN_REVIEW_DWELL_MS = 3000;
+const TAG_NAME_MAX_LENGTH = 30;
 
 type ReviewPersistResult = "saved" | "skipped" | "failed";
+
+function normalizeTagName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isTagNameTooLong(normalizedTagName: string): boolean {
+  return normalizedTagName.length > TAG_NAME_MAX_LENGTH;
+}
+
+function getActiveTagToken(rawInput: string): string {
+  const segments = rawInput.split(";");
+  return normalizeTagName(segments[segments.length - 1] ?? "");
+}
+
+function parseNormalizedTagNames(rawInput: string): { tagNames: string[]; hasTooLongTag: boolean } {
+  const deduped = new Set<string>();
+  let hasTooLongTag = false;
+
+  for (const segment of rawInput.split(";")) {
+    const normalized = normalizeTagName(segment);
+    if (!normalized) {
+      continue;
+    }
+    if (isTagNameTooLong(normalized)) {
+      hasTooLongTag = true;
+      continue;
+    }
+    deduped.add(normalized);
+  }
+
+  return { tagNames: Array.from(deduped), hasTooLongTag };
+}
 
 export default function ReviewPage() {
   const [locale, setLocale] = useState<Locale>("en");
@@ -53,9 +91,24 @@ export default function ReviewPage() {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
+  const [currentTags, setCurrentTags] = useState<Tag[]>([]);
+  const [tagSummary, setTagSummary] = useState<Tag[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  const [tagBusy, setTagBusy] = useState(false);
 
   const currentItem = useMemo(() => batch?.notes[index] ?? null, [batch, index]);
   const total = batch?.notes.length ?? 0;
+  const tagInputToken = useMemo(() => getActiveTagToken(tagInput), [tagInput]);
+  const isTagInputTooLong = useMemo(() => isTagNameTooLong(tagInputToken), [tagInputToken]);
+  const tagSuggestions = useMemo(() => {
+    if (!tagInputToken || isTagInputTooLong) {
+      return [];
+    }
+    const attachedTagIds = new Set(currentTags.map((tag) => tag.id));
+    return tagSummary
+      .filter((tag) => tag.name.startsWith(tagInputToken) && !attachedTagIds.has(tag.id))
+      .slice(0, 6);
+  }, [currentTags, isTagInputTooLong, tagInputToken, tagSummary]);
 
   useEffect(() => {
     const initialLocale = getInitialLocale();
@@ -174,9 +227,40 @@ export default function ReviewPage() {
     }
   }, []);
 
+  const loadTagSummary = useCallback(async (): Promise<void> => {
+    const res = await fetch("/api/tags");
+    const payload = await readJson<Tag[]>(res);
+    if (!res.ok || !payload.data) {
+      return;
+    }
+    setTagSummary(payload.data);
+  }, []);
+
+  const loadTagsForCurrentNote = useCallback(async (): Promise<void> => {
+    const noteId = currentItem?.note.id;
+    if (!noteId) {
+      setCurrentTags([]);
+      return;
+    }
+
+    const res = await fetch(`/api/notes/${noteId}/tags`);
+    const payload = await readJson<Tag[]>(res);
+    if (!res.ok || !payload.data) {
+      setCurrentTags([]);
+      return;
+    }
+    setCurrentTags(payload.data);
+  }, [currentItem?.note.id]);
+
   useEffect(() => {
     void loadBatch();
   }, [loadBatch]);
+
+  useEffect(() => {
+    setTagInput("");
+    void loadTagsForCurrentNote();
+    void loadTagSummary();
+  }, [loadTagSummary, loadTagsForCurrentNote]);
 
   useEffect(() => {
     const handlePageHide = (): void => {
@@ -199,11 +283,40 @@ export default function ReviewPage() {
     setEditing(true);
   }
 
+  async function attachTagNames(noteId: string, tagNames: string[]): Promise<Tag[]> {
+    if (tagNames.length === 0) {
+      return [];
+    }
+
+    const attachResults = await Promise.all(
+      tagNames.map(async (tagName) => {
+        const res = await fetch(`/api/notes/${noteId}/tags`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tagName }),
+        });
+        const payload = await readJson<{ tag: Tag }>(res);
+        if (!res.ok || !payload.data) {
+          throw new Error(payload.error ?? t.errorAttachTag);
+        }
+        return payload.data.tag;
+      }),
+    );
+
+    return attachResults;
+  }
+
   async function saveEdit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (!currentItem) {
       return;
     }
+    const parsedInput = parseNormalizedTagNames(tagInput);
+    if (parsedInput.hasTooLongTag) {
+      setError(t.errorTagTooLong);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -229,9 +342,28 @@ export default function ReviewPage() {
         nextItems[index] = { ...nextItems[index], note: payload.data as ReviewNote };
         return { ...prev, notes: nextItems };
       });
+
+      if (parsedInput.tagNames.length > 0) {
+        const attachedTags = await attachTagNames(currentItem.note.id, parsedInput.tagNames);
+        setCurrentTags((prev) => {
+          const prevIds = new Set(prev.map((tag) => tag.id));
+          const nextAdded = attachedTags.filter((tag) => !prevIds.has(tag.id));
+          if (nextAdded.length === 0) {
+            return prev;
+          }
+          return [...nextAdded, ...prev];
+        });
+        setTagInput("");
+        void loadTagSummary();
+      }
+
       setEditing(false);
-    } catch {
-      setError(t.errorUpdateNote);
+    } catch (saveError) {
+      if (saveError instanceof Error && saveError.message === t.errorAttachTag) {
+        setError(t.errorAttachTag);
+      } else {
+        setError(t.errorUpdateNote);
+      }
     } finally {
       setBusy(false);
     }
@@ -265,6 +397,102 @@ export default function ReviewPage() {
       setError(t.errorDeleteNote);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function attachTagsFromInput(): Promise<void> {
+    if (!currentItem) {
+      return;
+    }
+
+    const parsedInput = parseNormalizedTagNames(tagInput);
+    if (parsedInput.tagNames.length === 0 && !parsedInput.hasTooLongTag) {
+      return;
+    }
+    if (parsedInput.hasTooLongTag) {
+      setError(t.errorTagTooLong);
+      return;
+    }
+
+    setTagBusy(true);
+    setError(null);
+    try {
+      const attachResults = await attachTagNames(currentItem.note.id, parsedInput.tagNames);
+
+      setTagInput("");
+      setCurrentTags((prev) => {
+        const prevIds = new Set(prev.map((tag) => tag.id));
+        const nextAdded = attachResults.filter((tag) => !prevIds.has(tag.id));
+        if (nextAdded.length === 0) {
+          return prev;
+        }
+        return [...nextAdded, ...prev];
+      });
+      void loadTagSummary();
+    } catch {
+      setError(t.errorAttachTag);
+    } finally {
+      setTagBusy(false);
+    }
+  }
+
+  async function attachExistingTag(tag: Tag): Promise<void> {
+    if (!currentItem) {
+      return;
+    }
+
+    setTagBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/notes/${currentItem.note.id}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tagId: tag.id }),
+      });
+      const payload = await readJson<{ tag: Tag }>(res);
+      if (!res.ok || !payload.data) {
+        setError(payload.error ?? t.errorAttachTag);
+        return;
+      }
+
+      setTagInput("");
+      setCurrentTags((prev) => {
+        if (prev.some((existing) => existing.id === payload.data!.tag.id)) {
+          return prev;
+        }
+        return [payload.data!.tag, ...prev];
+      });
+      void loadTagSummary();
+    } catch {
+      setError(t.errorAttachTag);
+    } finally {
+      setTagBusy(false);
+    }
+  }
+
+  async function detachTag(tagId: string): Promise<void> {
+    if (!currentItem) {
+      return;
+    }
+
+    setTagBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/notes/${currentItem.note.id}/tags/${tagId}`, {
+        method: "DELETE",
+      });
+      const payload = await readJson<{ detached: boolean }>(res);
+      if (!res.ok) {
+        setError(payload.error ?? t.errorDetachTag);
+        return;
+      }
+
+      setCurrentTags((prev) => prev.filter((tag) => tag.id !== tagId));
+      void loadTagSummary();
+    } catch {
+      setError(t.errorDetachTag);
+    } finally {
+      setTagBusy(false);
     }
   }
 
@@ -353,6 +581,78 @@ export default function ReviewPage() {
                 maxLength={20000}
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-300 focus:ring"
               />
+              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-slate-700">{t.addTag}</p>
+                  <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
+                  <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {currentTags.map((tag) => (
+                    <span
+                      key={tag.id}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                    >
+                      #{tag.name}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void detachTag(tag.id);
+                        }}
+                        disabled={busy || tagBusy}
+                        className="text-slate-500 hover:text-red-600 disabled:opacity-60"
+                        aria-label={`${t.removeTagAriaPrefix} ${tag.name}`}
+                      >
+                        x
+                      </button>
+                    </span>
+                  ))}
+                  {currentTags.length === 0 ? (
+                    <span className="text-xs text-slate-500">{t.noTags}</span>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    value={tagInput}
+                    onChange={(event) => setTagInput(event.target.value)}
+                    placeholder={t.addTagPlaceholder}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void attachTagsFromInput();
+                    }}
+                    disabled={busy || tagBusy || isTagInputTooLong}
+                    className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                  >
+                    {t.addTag}
+                  </button>
+                </div>
+                {isTagInputTooLong ? (
+                  <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>
+                ) : null}
+
+                {tagSuggestions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {tagSuggestions.map((tag) => (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() => {
+                          void attachExistingTag(tag);
+                        }}
+                        disabled={busy || tagBusy}
+                        className="rounded-full border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                      >
+                        #{tag.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="flex gap-2">
                 <button
                   type="submit"
@@ -377,6 +677,19 @@ export default function ReviewPage() {
                   {currentItem.note.title?.trim() ? currentItem.note.title : t.untitled}
                 </h2>
                 <p className="whitespace-pre-wrap text-sm text-slate-700">{currentItem.note.content}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {currentTags.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+                  >
+                    #{tag.name}
+                  </span>
+                ))}
+                {currentTags.length === 0 ? (
+                  <span className="text-xs text-slate-500">{t.noTags}</span>
+                ) : null}
               </div>
 
               <div className="flex flex-wrap gap-2">

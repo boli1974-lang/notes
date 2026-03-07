@@ -263,6 +263,24 @@ Exit Criteria:
 - Tag editing is available in both Notes and Review edit flows.
 - Note creation is faster and clearer than the MVP version.
 
+## Milestone 4.1 — Note Card Interaction Consistency
+
+Goal:
+
+Make note-card interactions consistent between `/notes` and `/review` so users do not need to learn two different tag-removal behaviors.
+
+Features:
+
+- Align tag interaction model between Notes and Review cards.
+- Use one consistent rule for where tag removal is allowed (direct card vs edit mode).
+- Ensure labels/hints communicate the same editing affordances in both views.
+
+Exit Criteria:
+
+- Tag display and removal behavior are consistent across Notes and Review.
+- Users can predict where and how to edit/remove tags without context switching confusion.
+- No regression to review-event recording semantics during note/tag edits.
+
 ---
 
 ## Milestone 5 — Image Attachments

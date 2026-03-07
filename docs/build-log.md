@@ -598,3 +598,62 @@ New work should be logged as: `Phase X — Milestone Y`.
 - **Unused-tag semantics aligned with UI counts:** unused tags are now defined as tags attached to zero **active** notes (ignoring links that only point to soft-deleted notes). This aligns `Unused Tags` with `Tags` chips showing `(0)`.
 - **Undo visibility improved:** replaced top-of-page undo banner with an inline undo card inserted at the deleted note's original list position, so the action is visible near the user’s current context.
 - **Smoke coverage expanded and re-run:** `scripts/smoke-api.ts` now asserts restore returns previous title/content/tag state, preserves reviewed-status history across delete/restore, and supports delete-restore-delete repeatability. Full smoke suite passed after these updates.
+
+## Phase 1 — Milestone 4 Implementation
+
+## 2026-03-07
+
+### Technical Summary (what changed, which files)
+- Upgraded tag composer behavior to support semicolon-separated multi-tag input in `app/notes/page.tsx` for:
+  - quick-create composer
+  - existing-note tag attach input
+- Added review edit-mode tag management in `app/review/page.tsx`:
+  - attach/detach tags while editing
+  - semicolon-separated multi-tag attach
+  - suggestion chips for existing tags
+  - visible tags in non-edit review card for immediate confirmation
+- Updated review save behavior so pending tag input is applied when clicking `Save` in edit mode.
+- Expanded i18n coverage for milestone 4 tag-editing/composer hints/errors in:
+  - `lib/i18n/messages/en.ts`
+  - `lib/i18n/messages/zh.ts`
+- Expanded `scripts/smoke-api.ts` to assert milestone 4 behavior:
+  - semicolon flow with mixed existing+new tags
+  - duplicate semicolon entries do not create duplicate attachments
+  - review edit-equivalent tag attach/detach behavior
+  - review edit-equivalent operations do not auto-record review events
+- Added roadmap tracking item `Milestone 4.1` in `docs/roadmap.md` for future `/notes` vs `/review` note-card interaction consistency.
+
+### Architectural Rationale
+- Kept multi-tag parsing in UI while reusing existing tag attach/detach APIs to avoid introducing new backend patterns.
+- Preserved review-event semantics by explicitly keeping record-on-next/exit behavior unchanged.
+- Kept strict layering: UI uses API routes, services/repositories remain unchanged for this milestone.
+
+### List of files changed
+- `app/notes/page.tsx`
+- `app/review/page.tsx`
+- `lib/i18n/messages/en.ts`
+- `lib/i18n/messages/zh.ts`
+- `scripts/smoke-api.ts`
+- `docs/roadmap.md`
+- `docs/build-log.md`
+
+### Invariants involved
+- Review events are still inferred from leaving note context (Next/Exit + dwell guard), not from edit-save.
+- API contract remains `{ data }` / `{ error }`.
+- Tag length rule (<=30 after normalization) remains enforced.
+- No direct Prisma usage was introduced in UI/API layers.
+
+### What I Should Understand Conceptually
+- “Multi-tag input” is an interaction-layer enhancement that can safely reuse existing single-tag APIs.
+- Behavior consistency matters as much as feature availability; roadmap now tracks a dedicated consistency follow-up milestone.
+- Showing tag state directly on review cards improves user trust after save operations.
+
+### What Would Break If We Changed X
+- If edit-save starts recording reviews, review metrics will drift from the agreed navigation-based semantics.
+- If semicolon parsing is removed, users lose the reduced-step capture flow and revert to repetitive tag operations.
+- If review card stops showing tags, users cannot verify edit success without re-entering edit mode.
+
+### What To Improve Next Iteration
+- Implement Milestone 4.1 to unify `/notes` and `/review` tag-removal interaction model.
+- Consider extracting shared semicolon-parse helpers for notes/review UI to reduce duplication.
+- Add keyboard-first interactions for tag suggestions in review edit mode.
