@@ -61,6 +61,7 @@ export const enMessages = {
     noNotesForToday: "No notes available for review today.",
     titlePlaceholder: "Title (optional)",
     save: "Save",
+    saving: "Saving...",
     cancel: "Cancel",
     untitled: "(Untitled)",
     edit: "Edit",

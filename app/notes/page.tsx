@@ -2,7 +2,17 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { EDIT_ERROR } from "@/lib/constants/editErrorCodes";
 import { Locale, getInitialLocale, getMessages, persistLocale } from "@/lib/i18n";
+import {
+  computeTagDiff,
+  getActiveTagToken,
+  isTagNameTooLong,
+  mergeTagNames,
+  parseNormalizedTagNames,
+  removeActiveTagToken,
+  TAG_NAME_MAX_LENGTH,
+} from "@/lib/utils/tagDraft";
 
 type Note = {
   id: string;
@@ -35,40 +45,6 @@ async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
   return (await response.json()) as ApiResponse<T>;
 }
 
-function normalizeTagName(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-const TAG_NAME_MAX_LENGTH = 30;
-
-function isTagNameTooLong(normalizedTagName: string): boolean {
-  return normalizedTagName.length > TAG_NAME_MAX_LENGTH;
-}
-
-function getActiveTagToken(rawInput: string): string {
-  const segments = rawInput.split(";");
-  return normalizeTagName(segments[segments.length - 1] ?? "");
-}
-
-function parseNormalizedTagNames(rawInput: string): { tagNames: string[]; hasTooLongTag: boolean } {
-  const deduped = new Set<string>();
-  let hasTooLongTag = false;
-
-  for (const segment of rawInput.split(";")) {
-    const normalized = normalizeTagName(segment);
-    if (!normalized) {
-      continue;
-    }
-    if (isTagNameTooLong(normalized)) {
-      hasTooLongTag = true;
-      continue;
-    }
-    deduped.add(normalized);
-  }
-
-  return { tagNames: Array.from(deduped), hasTooLongTag };
-}
-
 export default function NotesPage() {
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
@@ -94,10 +70,9 @@ export default function NotesPage() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
+  const [editTagNames, setEditTagNames] = useState<string[]>([]);
+  const [editTagInput, setEditTagInput] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-
-  const [tagInputByNote, setTagInputByNote] = useState<Record<string, string>>({});
-  const [tagBusyNoteId, setTagBusyNoteId] = useState<string | null>(null);
 
   useEffect(() => {
     const initialLocale = getInitialLocale();
@@ -152,6 +127,20 @@ export default function NotesPage() {
     () => isTagNameTooLong(createTagInputNormalized),
     [createTagInputNormalized],
   );
+  const editTagInputNormalized = useMemo(() => getActiveTagToken(editTagInput), [editTagInput]);
+  const isEditTagInputTooLong = useMemo(
+    () => isTagNameTooLong(editTagInputNormalized),
+    [editTagInputNormalized],
+  );
+  const editTagSuggestions = useMemo(() => {
+    if (!editTagInputNormalized || isEditTagInputTooLong) {
+      return [];
+    }
+    const selected = new Set(editTagNames);
+    return tagSummary
+      .filter((tag) => tag.name.startsWith(editTagInputNormalized) && !selected.has(tag.name))
+      .slice(0, 6);
+  }, [editTagInputNormalized, editTagNames, isEditTagInputTooLong, tagSummary]);
 
   const loadTagsForNote = useCallback(async (noteId: string): Promise<void> => {
     const res = await fetch(`/api/notes/${noteId}/tags`);
@@ -257,7 +246,7 @@ export default function NotesPage() {
     });
     const payload = await readJson<{ tag: Tag }>(res);
     if (!res.ok || !payload.data) {
-      throw new Error(payload.error ?? t.errorAttachTag);
+      throw new Error(EDIT_ERROR.ATTACH_TAG);
     }
     return payload.data;
   }
@@ -325,9 +314,63 @@ export default function NotesPage() {
     setEditingNoteId(note.id);
     setEditTitle(note.title ?? "");
     setEditContent(note.content);
+    setEditTagNames((tagsByNote[note.id] ?? []).map((tag) => tag.name));
+    setEditTagInput("");
+  }
+
+  function addEditTagNames(rawTagInput: string): void {
+    const parsedInput = parseNormalizedTagNames(rawTagInput);
+    if (parsedInput.tagNames.length === 0 && !parsedInput.hasTooLongTag) {
+      return;
+    }
+    if (parsedInput.hasTooLongTag) {
+      setError(t.errorTagTooLong);
+      return;
+    }
+    setError(null);
+    setEditTagNames((prev) => mergeTagNames(prev, parsedInput.tagNames));
+    setEditTagInput("");
+  }
+
+  function removeEditTagName(tagName: string): void {
+    setError(null);
+    setEditTagNames((prev) => prev.filter((existingTagName) => existingTagName !== tagName));
+  }
+
+  function applySuggestionTag(tagName: string): void {
+    setError(null);
+    setEditTagNames((prev) => mergeTagNames(prev, [tagName]));
+    setEditTagInput(removeActiveTagToken(editTagInput));
+  }
+
+  function resetNotesEditState(): void {
+    setEditingNoteId(null);
+    setEditTagInput("");
+    setEditTagNames([]);
+  }
+
+  async function attachTagNames(noteId: string, tagNames: string[]): Promise<Tag[]> {
+    if (tagNames.length === 0) {
+      return [];
+    }
+
+    const attachedPayloads = await Promise.all(
+      tagNames.map((tagName) => attachTagToNote(noteId, { tagName })),
+    );
+
+    return attachedPayloads.map((payload) => payload.tag);
   }
 
   async function saveEdit(noteId: string): Promise<void> {
+    const parsedInput = parseNormalizedTagNames(editTagInput);
+    if (parsedInput.hasTooLongTag) {
+      setError(t.errorTagTooLong);
+      return;
+    }
+    const draftTagNames = mergeTagNames(editTagNames, parsedInput.tagNames);
+    const originalTags = tagsByNote[noteId] ?? [];
+    const { tagsToDetach, tagNamesToAttach } = computeTagDiff(originalTags, draftTagNames);
+
     setIsSavingEdit(true);
     setError(null);
     try {
@@ -345,10 +388,43 @@ export default function NotesPage() {
         return;
       }
 
-      setEditingNoteId(null);
-      await loadNotes();
-    } catch {
-      setError(t.errorUpdateNote);
+      if (tagsToDetach.length > 0) {
+        await Promise.all(
+          tagsToDetach.map(async (tag) => {
+            const delRes = await fetch(`/api/notes/${noteId}/tags/${tag.id}`, {
+              method: "DELETE",
+            });
+            const detachPayload = await readJson<{ detached: boolean }>(delRes);
+            if (!delRes.ok) {
+              throw new Error(EDIT_ERROR.DETACH_TAG);
+            }
+          }),
+        );
+      }
+
+      if (tagNamesToAttach.length > 0) {
+        await attachTagNames(noteId, tagNamesToAttach);
+      }
+
+      setNotes((prev) =>
+        prev.map((note) => (note.id === noteId ? { ...note, ...payload.data } : note)),
+      );
+      await Promise.all([loadTagsForNote(noteId), loadTagSummary(), loadUnusedTags()]);
+      resetNotesEditState();
+    } catch (saveError) {
+      if (saveError instanceof Error && saveError.message === EDIT_ERROR.DETACH_TAG) {
+        setError(t.errorDetachTag);
+      } else if (saveError instanceof Error && saveError.message === EDIT_ERROR.ATTACH_TAG) {
+        setError(t.errorAttachTag);
+      } else {
+        setError(t.errorUpdateNote);
+      }
+      await Promise.all([
+        loadNotes(),
+        loadTagsForNote(noteId),
+        loadTagSummary(),
+        loadUnusedTags(),
+      ]);
     } finally {
       setIsSavingEdit(false);
     }
@@ -416,88 +492,6 @@ export default function NotesPage() {
       await loadNotes();
     } catch {
       setError(t.errorRestoreNote);
-    }
-  }
-
-  async function attachTag(noteId: string): Promise<void> {
-    const parsedInput = parseNormalizedTagNames(tagInputByNote[noteId] ?? "");
-    if (parsedInput.tagNames.length === 0 && !parsedInput.hasTooLongTag) {
-      return;
-    }
-    if (parsedInput.hasTooLongTag) {
-      setError(t.errorTagTooLong);
-      return;
-    }
-
-    setTagBusyNoteId(noteId);
-    setError(null);
-    try {
-      const attachedPayloads = await Promise.all(
-        parsedInput.tagNames.map((tagName) => attachTagToNote(noteId, { tagName })),
-      );
-      const attachedTags = attachedPayloads.map((payload) => payload.tag);
-
-      setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
-      setTagsByNote((prev) => {
-        const existing = prev[noteId] ?? [];
-        const existingIds = new Set(existing.map((tag) => tag.id));
-        const nextAdded = attachedTags.filter((tag) => !existingIds.has(tag.id));
-        if (nextAdded.length === 0) {
-          return prev;
-        }
-        return { ...prev, [noteId]: [...nextAdded, ...existing] };
-      });
-      await Promise.all([loadTagSummary(), loadUnusedTags()]);
-    } catch {
-      setError(t.errorAttachTag);
-    } finally {
-      setTagBusyNoteId(null);
-    }
-  }
-
-  async function attachExistingTag(noteId: string, tag: Tag): Promise<void> {
-    setTagBusyNoteId(noteId);
-    setError(null);
-    try {
-      const payload = await attachTagToNote(noteId, { tagId: tag.id });
-      setTagInputByNote((prev) => ({ ...prev, [noteId]: "" }));
-      setTagsByNote((prev) => {
-        const existing = prev[noteId] ?? [];
-        if (existing.some((item) => item.id === payload.tag.id)) {
-          return prev;
-        }
-        return { ...prev, [noteId]: [payload.tag, ...existing] };
-      });
-      await Promise.all([loadTagSummary(), loadUnusedTags()]);
-    } catch {
-      setError(t.errorAttachTag);
-    } finally {
-      setTagBusyNoteId(null);
-    }
-  }
-
-  async function detachTag(noteId: string, tagId: string): Promise<void> {
-    setTagBusyNoteId(noteId);
-    setError(null);
-    try {
-      const res = await fetch(`/api/notes/${noteId}/tags/${tagId}`, {
-        method: "DELETE",
-      });
-      const payload = await readJson<{ detached: boolean }>(res);
-      if (!res.ok) {
-        setError(payload.error ?? t.errorDetachTag);
-        return;
-      }
-
-      setTagsByNote((prev) => ({
-        ...prev,
-        [noteId]: (prev[noteId] ?? []).filter((tag) => tag.id !== tagId),
-      }));
-      await Promise.all([loadTagSummary(), loadUnusedTags()]);
-    } catch {
-      setError(t.errorDetachTag);
-    } finally {
-      setTagBusyNoteId(null);
     }
   }
 
@@ -770,6 +764,68 @@ export default function NotesPage() {
                       rows={4}
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-300 focus:ring"
                     />
+                    <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-wrap gap-2">
+                        {editTagNames.map((tagName) => (
+                          <span
+                            key={tagName}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                          >
+                            #{tagName}
+                            <button
+                              type="button"
+                              onClick={() => removeEditTagName(tagName)}
+                              disabled={isSavingEdit}
+                              className="text-slate-500 hover:text-red-600 disabled:opacity-60"
+                              aria-label={`${t.removeTagAriaPrefix} ${tagName}`}
+                            >
+                              x
+                            </button>
+                          </span>
+                        ))}
+                        {editTagNames.length === 0 ? (
+                          <span className="text-xs text-slate-500">{t.noTags}</span>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <input
+                          value={editTagInput}
+                          onChange={(event) => setEditTagInput(event.target.value)}
+                          placeholder={t.addTagPlaceholder}
+                          disabled={isSavingEdit}
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring disabled:opacity-60"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => addEditTagNames(editTagInput)}
+                          disabled={isSavingEdit || isEditTagInputTooLong}
+                          className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                        >
+                          {t.addTag}
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
+                      <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
+                      {isEditTagInputTooLong ? (
+                        <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>
+                      ) : null}
+                      {editTagSuggestions.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {editTagSuggestions.map((tag) => (
+                            <button
+                              key={tag.id}
+                              type="button"
+                              onClick={() => applySuggestionTag(tag.name)}
+                              disabled={isSavingEdit}
+                              className="rounded-full border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                            >
+                              #{tag.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="flex gap-2">
                       <button
                         onClick={() => {
@@ -781,7 +837,7 @@ export default function NotesPage() {
                         {isSavingEdit ? t.saving : t.save}
                       </button>
                       <button
-                        onClick={() => setEditingNoteId(null)}
+                        onClick={resetNotesEditState}
                         className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
                       >
                         {t.cancel}
@@ -819,91 +875,15 @@ export default function NotesPage() {
                       {tags.map((tag) => (
                         <span
                           key={tag.id}
-                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+                          className="inline-flex items-center rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700"
                         >
                           #{tag.name}
-                          <button
-                            onClick={() => {
-                              void detachTag(note.id, tag.id);
-                            }}
-                            disabled={tagBusyNoteId === note.id}
-                            className="text-slate-500 hover:text-red-600"
-                            aria-label={`${t.removeTagAriaPrefix} ${tag.name}`}
-                          >
-                            x
-                          </button>
                         </span>
                       ))}
                       {tags.length === 0 ? (
                         <span className="text-xs text-slate-500">{t.noTags}</span>
                       ) : null}
                     </div>
-
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      {(() => {
-                        const normalizedInput = getActiveTagToken(tagInputByNote[note.id] ?? "");
-                        const isTooLong = isTagNameTooLong(normalizedInput);
-                        return (
-                          <>
-                            <input
-                              value={tagInputByNote[note.id] ?? ""}
-                              onChange={(event) =>
-                                setTagInputByNote((prev) => ({ ...prev, [note.id]: event.target.value }))
-                              }
-                              placeholder={t.addTagPlaceholder}
-                              className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs outline-none ring-slate-300 focus:ring"
-                            />
-                            <button
-                              onClick={() => {
-                                void attachTag(note.id);
-                              }}
-                              disabled={tagBusyNoteId === note.id || isTooLong}
-                              className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                            >
-                              {t.addTag}
-                            </button>
-                          </>
-                        );
-                      })()}
-                    </div>
-                    <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
-                    <p className="text-[11px] text-slate-500">{t.tagLengthHint}</p>
-                    {(() => {
-                      const normalizedInput = getActiveTagToken(tagInputByNote[note.id] ?? "");
-                      if (!isTagNameTooLong(normalizedInput)) {
-                        return null;
-                      }
-                      return <p className="text-[11px] text-red-600">{t.errorTagTooLong}</p>;
-                    })()}
-                    {(() => {
-                      const query = getActiveTagToken(tagInputByNote[note.id] ?? "");
-                      if (!query || isTagNameTooLong(query)) {
-                        return null;
-                      }
-                      const attachedIds = new Set(tags.map((tag) => tag.id));
-                      const suggestions = tagSummary
-                        .filter((tag) => tag.name.startsWith(query) && !attachedIds.has(tag.id))
-                        .slice(0, 6);
-                      if (suggestions.length === 0) {
-                        return null;
-                      }
-                      return (
-                        <div className="flex flex-wrap gap-2">
-                          {suggestions.map((tag) => (
-                            <button
-                              key={tag.id}
-                              onClick={() => {
-                                void attachExistingTag(note.id, tag);
-                              }}
-                              disabled={tagBusyNoteId === note.id}
-                              className="rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                            >
-                              #{tag.name}
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })()}
 
                     <p className="text-xs text-slate-500">
                       {t.createdAtPrefix} {new Date(note.createdAt).toLocaleString()}

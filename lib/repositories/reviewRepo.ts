@@ -22,7 +22,7 @@ export async function findReviewBatchByDate(
   return prisma.reviewBatch.findFirst({
     where: {
       reviewDate,
-      ...withOptionalUserWhere(userId),
+      userId: userId ?? null,
     },
   });
 }

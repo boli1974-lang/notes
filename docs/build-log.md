@@ -657,3 +657,62 @@ New work should be logged as: `Phase X — Milestone Y`.
 - Implement Milestone 4.1 to unify `/notes` and `/review` tag-removal interaction model.
 - Consider extracting shared semicolon-parse helpers for notes/review UI to reduce duplication.
 - Add keyboard-first interactions for tag suggestions in review edit mode.
+
+---
+
+## Phase 1 — Milestone 4 / 4.1 Hardening Pass
+
+### Technical Summary (what changed, which files)
+- **Shared tag-draft helpers:** Added `lib/utils/tagDraft.ts` with `parseNormalizedTagNames`, `mergeTagNames`, `computeTagDiff`, `getActiveTagToken`, `isTagNameTooLong`, `TAG_NAME_MAX_LENGTH`. Notes and Review now import these instead of duplicating logic; reduces drift risk between the two pages.
+- **Stable error classification:** Added `lib/constants/editErrorCodes.ts` with `EDIT_ERROR.ATTACH_TAG` and `EDIT_ERROR.DETACH_TAG`. Save flows throw these internal codes; catch blocks classify by code and map to localized strings only for display. Visible user messages unchanged; classification no longer depends on locale.
+- **Save-failure re-sync:** On any failure during the tag sync step (detach/attach) after PATCH, both Notes and Review now immediately re-sync from server: reload note tags, tag summary, and (Notes) unused tags. Reduces UI/server drift after partial failures without changing backend.
+- **Reset edit state helpers:** `resetNotesEditState()` in Notes and `resetReviewEditState()` in Review centralize clearing of edit/draft state; used on Cancel and after successful save (and Review after delete). Fewer duplicated setState calls.
+- **Clear error on local tag edits:** When the user adds or removes a tag in the draft (edit mode) without saving, stale error state is cleared so an old error message does not remain visible.
+- **Disable tag controls while save in flight:** In both Notes and Review edit mode, tag remove buttons, tag input, add-tag button, and tag suggestion buttons are disabled while Save is in progress (`isSavingEdit` / `busy`).
+
+### List of files changed
+- `lib/utils/tagDraft.ts` (new)
+- `lib/constants/editErrorCodes.ts` (new)
+- `app/notes/page.tsx`
+- `app/review/page.tsx`
+- `docs/build-log.md`
+
+### Risk reduced
+- Notes and Review tag logic stays in sync via shared helpers; future changes to parsing or diff logic happen in one place.
+- Error handling is stable across locales and copy changes.
+- Partial save failures no longer leave the UI showing a mix of applied and unapplied tag state; user sees server truth after re-sync.
+- Double-clicks or repeated actions during save are prevented by disabled controls.
+
+### Intentionally deferred
+- No new transactional backend endpoint; save remains non-atomic (PATCH then tag sync). Re-sync-on-failure mitigates drift only.
+- No shared hook or large abstraction; helpers are minimal and stateless.
+- Review-event semantics unchanged; no changes to mark-reviewed or dwell logic.
+- `scripts/smoke-api.ts` unchanged; existing coverage remains sufficient for correctness.
+
+### Manual test checklist (Milestone 4 / 4.1)
+- **/ redirect:** Open `/`; confirm redirect to `/notes` with no extra click.
+- **Notes — Edit Save:** Edit a note, add/remove tags in draft, click Save; confirm tags and note title/content persist and match server (e.g. refresh or reload tags).
+- **Notes — Edit Cancel:** Edit a note, add/remove tags in draft, click Cancel; confirm no tag changes were applied and note shows original tags.
+- **Notes — Save in flight:** While Save is running, confirm tag remove buttons, tag input, Add Tag button, and suggestion chips are disabled.
+- **Notes — Error then local edit:** If an error was shown (e.g. from a failed save), perform a valid local tag add or remove; confirm error message clears.
+- **Review — Edit Save:** On a review card, click Edit, add/remove tags in draft, click Save; confirm tags persist and non-edit view shows updated tags.
+- **Review — Edit Cancel:** On a review card, Edit, change tags in draft, click Cancel; confirm no tag changes and card shows original tags.
+- **Review — Save in flight:** While Save is running, confirm tag remove, input, Add Tag, and suggestion buttons are disabled.
+- **Review — Error then local edit:** After an error, do a valid local tag add/remove; confirm error clears.
+- **Review-event non-regression:** Go through review with Next (dwell ≥3 s on a note); confirm review is recorded. Edit a note’s title/content/tags and Save; confirm this does not create a review event. Prev/Next and page exit behavior unchanged.
+
+### Final hardening fixes
+- Notes save failure now fully re-syncs note + tag state (catch block includes `loadNotes()` so note title/content are refreshed after partial failure).
+- `mergeTagNames` defensively normalizes inputs so callers cannot accidentally bypass normalization.
+
+### Follow-up fixes (batch stability, tag suggestion, loading label)
+
+**Review batch stability**
+- `findReviewBatchByDate` now includes `userId: userId ?? null` in the where clause so the same (user, date) batch is always returned; new notes created later in the day no longer change the batch.
+- **Engineering lesson:** The bug occurred because the lookup used a flexible query (matching only `reviewDate`) instead of the true entity identity. A review batch is uniquely identified by `(reviewDate, userId-or-null)`. Identity lookups should always use the full key so that the same batch is returned consistently and accidental batch recreation or mutation is avoided.
+
+**Tag suggestion input**
+- Added `removeActiveTagToken(rawInput)` in `lib/utils/tagDraft.ts`; when the user clicks a suggestion, only the active (last) token is removed from the input and the selected tag is added to the draft, so earlier tokens (e.g. `tag1`) are preserved. Applied in both Notes and Review edit-mode suggestion handlers.
+
+**Review edit save loading label**
+- Review edit mode Save button now shows a loading label (`t.saving`, e.g. "Saving...") while save is in flight, consistent with Notes. Added `saving` to review i18n in en and zh.

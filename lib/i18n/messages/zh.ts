@@ -61,6 +61,7 @@ export const zhMessages = {
     noNotesForToday: "今天没有可复习的笔记。",
     titlePlaceholder: "标题（可选）",
     save: "保存",
+    saving: "保存中...",
     cancel: "取消",
     untitled: "（无标题）",
     edit: "编辑",

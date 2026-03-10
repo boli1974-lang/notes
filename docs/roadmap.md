@@ -271,13 +271,17 @@ Make note-card interactions consistent between `/notes` and `/review` so users d
 
 Features:
 
+- Use `Notes` as the default entry page by routing `/` directly to `/notes` (remove extra landing-page click).
 - Align tag interaction model between Notes and Review cards.
 - Use one consistent rule for where tag removal is allowed (direct card vs edit mode).
 - Ensure labels/hints communicate the same editing affordances in both views.
+- **Tag add/remove only on Save:** In edit mode, adding or removing tags is buffered locally; changes are applied only when the user clicks **Save**. Clicking **Cancel** discards tag changes (no attach/detach).
 
 Exit Criteria:
 
+- Opening app root lands users directly in `Notes` without an extra navigation step.
 - Tag display and removal behavior are consistent across Notes and Review.
+- In edit mode, tag add/remove is applied only on **Save**; **Cancel** discards tag changes (no attach/detach).
 - Users can predict where and how to edit/remove tags without context switching confusion.
 - No regression to review-event recording semantics during note/tag edits.
 
