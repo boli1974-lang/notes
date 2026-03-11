@@ -36,6 +36,22 @@ type PendingDeletedNote = {
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
+type NoteImageItem = {
+  id: string;
+  url: string;
+  fileName?: string;
+};
+
+const MAX_IMAGES_PER_NOTE = 5;
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+
+type DraftImage = { file: File; previewUrl: string };
+
+function revokeDraftPreviews(items: DraftImage[]): void {
+  items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+}
+
 type ApiResponse<T> = {
   data?: T;
   error?: string;
@@ -73,6 +89,10 @@ export default function NotesPage() {
   const [editTagNames, setEditTagNames] = useState<string[]>([]);
   const [editTagInput, setEditTagInput] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [imagesByNote, setImagesByNote] = useState<Record<string, NoteImageItem[]>>({});
+  const [createDraftFiles, setCreateDraftFiles] = useState<DraftImage[]>([]);
+  const [editDraftFiles, setEditDraftFiles] = useState<DraftImage[]>([]);
+  const [editPendingDeleteIds, setEditPendingDeleteIds] = useState<string[]>([]);
 
   useEffect(() => {
     const initialLocale = getInitialLocale();
@@ -173,6 +193,15 @@ export default function NotesPage() {
     setUnusedTags(payload.data);
   }, []);
 
+  const loadImagesForNote = useCallback(async (noteId: string): Promise<void> => {
+    const res = await fetch(`/api/notes/${noteId}/images`);
+    const payload = await readJson<NoteImageItem[]>(res);
+    if (!res.ok || !payload.data) {
+      return;
+    }
+    setImagesByNote((prev) => ({ ...prev, [noteId]: payload.data ?? [] }));
+  }, []);
+
   const loadNotes = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -188,6 +217,7 @@ export default function NotesPage() {
       setNotes(payload.data);
       setTagsByNote({});
       await Promise.all(payload.data.map((note) => loadTagsForNote(note.id)));
+      await Promise.all(payload.data.map((note) => loadImagesForNote(note.id)));
       await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch (loadError) {
       if (loadError instanceof Error && loadError.message) {
@@ -198,7 +228,7 @@ export default function NotesPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadTagSummary, loadTagsForNote, loadUnusedTags, queryString]);
+  }, [loadImagesForNote, loadTagSummary, loadTagsForNote, loadUnusedTags, queryString]);
 
   useEffect(() => {
     void loadNotes();
@@ -211,6 +241,17 @@ export default function NotesPage() {
       }
     };
   }, [pendingDeletedNote]);
+
+  const createDraftRef = useRef(createDraftFiles);
+  const editDraftRef = useRef(editDraftFiles);
+  createDraftRef.current = createDraftFiles;
+  editDraftRef.current = editDraftFiles;
+  useEffect(() => {
+    return () => {
+      revokeDraftPreviews(createDraftRef.current);
+      revokeDraftPreviews(editDraftRef.current);
+    };
+  }, []);
 
   function addCreateTagName(rawTag: string): void {
     const { tagNames, hasTooLongTag } = parseNormalizedTagNames(rawTag);
@@ -297,11 +338,33 @@ export default function NotesPage() {
           setError(t.errorAttachTag);
         }
       }
+      let imageUploadFailed = false;
+      if (payload.data?.id && createDraftFiles.length > 0) {
+        for (const draft of createDraftFiles) {
+          const { file } = draft;
+          if (!ALLOWED_IMAGE_TYPES.includes(file.type) || file.size > MAX_IMAGE_SIZE_BYTES) continue;
+          const form = new FormData();
+          form.append("file", file);
+          const imgRes = await fetch(`/api/notes/${payload.data!.id}/images`, {
+            method: "POST",
+            body: form,
+          });
+          if (!imgRes.ok) {
+            imageUploadFailed = true;
+            setError(t.errorImageUpload);
+          }
+        }
+        if (imageUploadFailed) {
+          await loadImagesForNote(payload.data!.id);
+        }
+      }
 
       setQuickTitle("");
       setQuickContent("");
       setCreateTagInput("");
       setCreateTagNames([]);
+      revokeDraftPreviews(createDraftFiles);
+      setCreateDraftFiles([]);
       await loadNotes();
     } catch {
       setError(t.errorCreateNote);
@@ -316,6 +379,9 @@ export default function NotesPage() {
     setEditContent(note.content);
     setEditTagNames((tagsByNote[note.id] ?? []).map((tag) => tag.name));
     setEditTagInput("");
+    setEditDraftFiles([]);
+    setEditPendingDeleteIds([]);
+    void loadImagesForNote(note.id);
   }
 
   function addEditTagNames(rawTagInput: string): void {
@@ -344,9 +410,12 @@ export default function NotesPage() {
   }
 
   function resetNotesEditState(): void {
+    revokeDraftPreviews(editDraftFiles);
     setEditingNoteId(null);
     setEditTagInput("");
     setEditTagNames([]);
+    setEditDraftFiles([]);
+    setEditPendingDeleteIds([]);
   }
 
   async function attachTagNames(noteId: string, tagNames: string[]): Promise<Tag[]> {
@@ -405,11 +474,34 @@ export default function NotesPage() {
       if (tagNamesToAttach.length > 0) {
         await attachTagNames(noteId, tagNamesToAttach);
       }
+      let imageOpFailed = false;
+      for (const draft of editDraftFiles) {
+        const { file } = draft;
+        if (!ALLOWED_IMAGE_TYPES.includes(file.type) || file.size > MAX_IMAGE_SIZE_BYTES) continue;
+        const form = new FormData();
+        form.append("file", file);
+        const imgRes = await fetch(`/api/notes/${noteId}/images`, { method: "POST", body: form });
+        if (!imgRes.ok) {
+          imageOpFailed = true;
+          setError(t.errorImageUpload);
+        }
+      }
+      for (const imageId of editPendingDeleteIds) {
+        const delRes = await fetch(`/api/notes/${noteId}/images/${imageId}`, { method: "DELETE" });
+        if (!delRes.ok) {
+          imageOpFailed = true;
+          setError(t.errorImageUpload);
+        }
+      }
 
       setNotes((prev) =>
         prev.map((note) => (note.id === noteId ? { ...note, ...payload.data } : note)),
       );
+      await loadImagesForNote(noteId);
       await Promise.all([loadTagsForNote(noteId), loadTagSummary(), loadUnusedTags()]);
+      if (imageOpFailed) {
+        setError(t.errorImageUpload);
+      }
       resetNotesEditState();
     } catch (saveError) {
       if (saveError instanceof Error && saveError.message === EDIT_ERROR.DETACH_TAG) {
@@ -422,6 +514,7 @@ export default function NotesPage() {
       await Promise.all([
         loadNotes(),
         loadTagsForNote(noteId),
+        loadImagesForNote(noteId),
         loadTagSummary(),
         loadUnusedTags(),
       ]);
@@ -455,7 +548,11 @@ export default function NotesPage() {
       if (pendingDeletedNote) {
         clearTimeout(pendingDeletedNote.timeoutId);
       }
+      const noteIdToCleanup = noteToDelete.id;
       const timeoutId = setTimeout(() => {
+        fetch(`/api/notes/${noteIdToCleanup}/images/cleanup-after-undo-expiry`, {
+          method: "POST",
+        }).catch((err) => console.error("Cleanup after undo expiry failed", err));
         setPendingDeletedNote(null);
       }, 8000);
       setPendingDeletedNote({
@@ -546,6 +643,58 @@ export default function NotesPage() {
           rows={4}
           className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-300 focus:ring"
         />
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-slate-700">{t.imagesLabel}</label>
+          {createDraftFiles.length >= MAX_IMAGES_PER_NOTE ? (
+            <p className="text-[11px] text-amber-600">{t.imageLimitReached}</p>
+          ) : (
+            <input
+              type="file"
+              accept={ALLOWED_IMAGE_TYPES.join(",")}
+              className="block w-full text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-slate-700"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                const valid = files.filter(
+                  (f) => ALLOWED_IMAGE_TYPES.includes(f.type) && f.size <= MAX_IMAGE_SIZE_BYTES,
+                );
+                setCreateDraftFiles((prev) => {
+                  const next = prev.concat(
+                    valid.slice(0, Math.max(0, MAX_IMAGES_PER_NOTE - prev.length)).map((file) => ({
+                      file,
+                      previewUrl: URL.createObjectURL(file),
+                    })),
+                  );
+                  return next.slice(0, MAX_IMAGES_PER_NOTE);
+                });
+                e.target.value = "";
+              }}
+            />
+          )}
+          {createDraftFiles.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {createDraftFiles.map((draft, i) => (
+                <div key={i} className="relative">
+                  <img
+                    src={draft.previewUrl}
+                    alt=""
+                    className="h-16 w-16 rounded border border-slate-200 object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      URL.revokeObjectURL(draft.previewUrl);
+                      setCreateDraftFiles((prev) => prev.filter((_, j) => j !== i));
+                    }}
+                    className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white"
+                    aria-label={t.removeImage}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <div className="space-y-2">
           <label className="block text-xs font-medium text-slate-700">{t.createTagsLabel}</label>
           <p className="text-[11px] text-slate-500">{t.tagMultiInputHint}</p>
@@ -764,6 +913,77 @@ export default function NotesPage() {
                       rows={4}
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none ring-slate-300 focus:ring"
                     />
+                    <div className="space-y-2">
+                      <span className="text-xs font-medium text-slate-700">{t.imagesLabel}</span>
+                      {(imagesByNote[note.id] ?? [])
+                        .filter((img) => !editPendingDeleteIds.includes(img.id))
+                        .map((img) => (
+                          <div key={img.id} className="relative inline-block">
+                            <img
+                              src={img.url}
+                              alt=""
+                              className="h-16 w-16 rounded border border-slate-200 object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setEditPendingDeleteIds((prev) => [...prev, img.id])}
+                              disabled={isSavingEdit}
+                              className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-60"
+                              aria-label={t.removeImage}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      {editDraftFiles.map((draft, i) => (
+                        <div key={`draft-${i}`} className="relative inline-block">
+                          <img
+                            src={draft.previewUrl}
+                            alt=""
+                            className="h-16 w-16 rounded border border-slate-200 object-cover"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              URL.revokeObjectURL(draft.previewUrl);
+                              setEditDraftFiles((prev) => prev.filter((_, j) => j !== i));
+                            }}
+                            disabled={isSavingEdit}
+                            className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-60"
+                            aria-label={t.removeImage}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                      {(imagesByNote[note.id] ?? []).filter((img) => !editPendingDeleteIds.includes(img.id)).length + editDraftFiles.length < MAX_IMAGES_PER_NOTE ? (
+                        <input
+                          type="file"
+                          accept={ALLOWED_IMAGE_TYPES.join(",")}
+                          disabled={isSavingEdit}
+                          className="block text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-slate-700 disabled:opacity-60"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files ?? []);
+                            const valid = files.filter(
+                              (f) => ALLOWED_IMAGE_TYPES.includes(f.type) && f.size <= MAX_IMAGE_SIZE_BYTES,
+                            );
+                            const visible = (imagesByNote[note.id] ?? []).filter((img) => !editPendingDeleteIds.includes(img.id)).length;
+                            setEditDraftFiles((prev) => {
+                              const maxNew = MAX_IMAGES_PER_NOTE - visible - prev.length;
+                              return prev.concat(
+                                valid.slice(0, Math.max(0, maxNew)).map((file) => ({
+                                  file,
+                                  previewUrl: URL.createObjectURL(file),
+                                })),
+                              );
+                            });
+                            e.target.value = "";
+                          }}
+                        />
+                      ) : (
+                        <p className="text-[11px] text-amber-600">{t.imageLimitReached}</p>
+                      )}
+                    </div>
                     <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
                       <div className="flex flex-wrap gap-2">
                         {editTagNames.map((tagName) => (
@@ -852,6 +1072,18 @@ export default function NotesPage() {
                           {note.title?.trim() ? note.title : t.untitled}
                         </h3>
                         <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{note.content}</p>
+                        {(imagesByNote[note.id] ?? []).length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {(imagesByNote[note.id] ?? []).map((img) => (
+                              <img
+                                key={img.id}
+                                src={img.url}
+                                alt=""
+                                className="h-12 w-12 rounded border border-slate-200 object-cover"
+                              />
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex shrink-0 gap-2">
                         <button

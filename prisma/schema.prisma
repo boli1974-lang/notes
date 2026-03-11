@@ -5,25 +5,45 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Note {
-  id                String    @id @default(uuid()) @db.Uuid
-  title             String?   @db.VarChar(120)
-  content           String    @db.Text
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                String     @id @default(uuid()) @db.Uuid
+  title             String?    @db.VarChar(120)
+  content           String     @db.Text
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
   deletedAt         DateTime?
-  userId            String?   @db.Uuid
+  userId            String?    @db.Uuid
   noteTags          NoteTag[]
+  noteImages        NoteImage[]
   reviewEvents      ReviewEvent[]
   reviewBatchItems  ReviewBatchItem[]
 
   @@index([userId])
   @@index([deletedAt])
   @@index([createdAt])
+}
+
+model NoteImage {
+  id          String    @id @default(uuid()) @db.Uuid
+  noteId      String    @db.Uuid
+  storagePath String    @db.VarChar(512)
+  fileName    String    @db.VarChar(255)
+  contentType String    @db.VarChar(128)
+  sizeBytes   Int
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+  userId      String?   @db.Uuid
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId])
+  @@index([deletedAt])
+  @@index([userId])
 }
 
 model Tag {

@@ -318,6 +318,71 @@ async function main(): Promise<void> {
     );
     pass("listed tags for note via API");
 
+    // Milestone 5: image attachments API (single-file-per-request; GET list returns signed URLs).
+    const listImagesEmptyRes = await fetch(
+      `${baseUrl}/api/notes/${noteId}/images?userId=${encodeURIComponent(userId)}`,
+    );
+    assert(listImagesEmptyRes.status === 200, "list images (empty) should return 200");
+    const listImagesEmptyPayload = await parseJson<Array<{ id: string; url?: string }>>(listImagesEmptyRes);
+    assert(Array.isArray(listImagesEmptyPayload.data), "list images should return data array");
+    assert(listImagesEmptyPayload.data.length === 0, "new note should have no images");
+    pass("GET note images returns empty array when no images");
+
+    const minimalJpeg = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+      0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+      0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12,
+      0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20,
+      0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27,
+      0x39, 0x3d, 0x38, 0x32, 0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xd9,
+    ]);
+    const imageFormData = new FormData();
+    imageFormData.append("file", new Blob([minimalJpeg], { type: "image/jpeg" }), "smoke.jpg");
+    imageFormData.append("userId", userId);
+    const uploadImageRes = await fetch(`${baseUrl}/api/notes/${noteId}/images`, {
+      method: "POST",
+      body: imageFormData,
+    });
+    if (uploadImageRes.status === 201) {
+      const uploadImagePayload = await parseJson<{ id: string; noteId: string }>(uploadImageRes);
+      assert(uploadImagePayload.data?.id, "upload image should return created image");
+      const imageId = uploadImagePayload.data.id;
+      pass("uploaded image to note via API (single-file POST)");
+
+      const listImagesRes = await fetch(
+        `${baseUrl}/api/notes/${noteId}/images?userId=${encodeURIComponent(userId)}`,
+      );
+      assert(listImagesRes.status === 200, "list images after upload should return 200");
+      const listImagesPayload = await parseJson<Array<{ id: string; url: string }>>(listImagesRes);
+      assert(listImagesPayload.data?.length === 1, "list images should return one image");
+      assert(typeof listImagesPayload.data[0].url === "string" && listImagesPayload.data[0].url.length > 0, "image should have signed url");
+      pass("GET note images returns signed URLs");
+
+      const deleteImageRes = await fetch(
+        `${baseUrl}/api/notes/${noteId}/images/${imageId}?userId=${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+      );
+      assert(deleteImageRes.status === 200, "delete image should return 200");
+      pass("deleted image via API");
+
+      const listImagesAfterDeleteRes = await fetch(
+        `${baseUrl}/api/notes/${noteId}/images?userId=${encodeURIComponent(userId)}`,
+      );
+      assert(listImagesAfterDeleteRes.status === 200, "list images after delete should return 200");
+      const listImagesAfterDeletePayload = await parseJson<unknown[]>(listImagesAfterDeleteRes);
+      assert(listImagesAfterDeletePayload.data?.length === 0, "list images after delete should be empty");
+      pass("list images after delete is empty or reduced");
+    } else {
+      const errPayload = await parseJson<{ error?: string }>(uploadImageRes);
+      if (uploadImageRes.status === 500 && errPayload.error?.toLowerCase().includes("supabase")) {
+        console.warn(
+          "SKIP (partial verification): image upload not run — Supabase not configured. GET list empty and path exist; upload/delete/signed-URL assertions were skipped.",
+        );
+      } else {
+        fail(`upload image failed: ${uploadImageRes.status} ${JSON.stringify(errPayload)}`);
+      }
+    }
+
     const detachTagRes = await fetch(
       `${baseUrl}/api/notes/${noteId}/tags/${existingTagId}?userId=${encodeURIComponent(userId)}`,
       { method: "DELETE" },

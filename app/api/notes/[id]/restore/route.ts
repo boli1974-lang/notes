@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { restoreImagesByNoteId } from "@/lib/services/noteImageService";
 import { restoreNote } from "@/lib/services/noteService";
 
 type RestoreBody = {
@@ -41,6 +42,7 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
     if (!restored) {
       return NextResponse.json({ error: "Note not found." }, { status: 404 });
     }
+    await restoreImagesByNoteId(id, userId);
 
     return NextResponse.json({ data: { restored: true } });
   } catch {

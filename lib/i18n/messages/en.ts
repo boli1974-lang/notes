@@ -46,6 +46,10 @@ export const enMessages = {
     clearTagFilter: "Clear Filter",
     allTags: "All Tags",
     selectedTagPrefix: "Filtering by",
+    imagesLabel: "Images",
+    imageLimitReached: "Max 5 images per note.",
+    removeImage: "Remove image",
+    errorImageUpload: "Image upload failed.",
   },
   review: {
     title: "Review Today",
@@ -81,5 +85,9 @@ export const enMessages = {
     errorUpdateNote: "Failed to update note.",
     errorDeleteNote: "Failed to delete note.",
     errorMarkReviewed: "Failed to mark reviewed.",
+    imagesLabel: "Images",
+    imageLimitReached: "Max 5 images per note.",
+    removeImage: "Remove image",
+    errorImageUpload: "Image upload failed.",
   },
 } as const;

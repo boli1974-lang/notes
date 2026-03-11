@@ -46,6 +46,10 @@ export const zhMessages = {
     clearTagFilter: "清除筛选",
     allTags: "全部标签",
     selectedTagPrefix: "当前筛选",
+    imagesLabel: "图片",
+    imageLimitReached: "每条笔记最多 5 张图片。",
+    removeImage: "移除图片",
+    errorImageUpload: "图片上传失败。",
   },
   review: {
     title: "今日复习",
@@ -81,5 +85,9 @@ export const zhMessages = {
     errorUpdateNote: "更新笔记失败。",
     errorDeleteNote: "删除笔记失败。",
     errorMarkReviewed: "标记复习失败。",
+    imagesLabel: "图片",
+    imageLimitReached: "每条笔记最多 5 张图片。",
+    removeImage: "移除图片",
+    errorImageUpload: "图片上传失败。",
   },
 } as const;

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { softDeleteImagesByNoteId } from "@/lib/services/noteImageService";
 import { getNoteById, softDeleteNote, updateNote } from "@/lib/services/noteService";
 
 type NoteUpdateBody = {
@@ -107,6 +108,7 @@ export async function DELETE(request: Request, context: RouteContext): Promise<N
     if (!deleted) {
       return NextResponse.json({ error: "Note not found." }, { status: 404 });
     }
+    await softDeleteImagesByNoteId(id, userId);
 
     return NextResponse.json({ data: { deleted: true } });
   } catch {

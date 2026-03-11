@@ -41,11 +41,26 @@ type ApiResponse<T> = {
   error?: string;
 };
 
+type NoteImageItem = {
+  id: string;
+  url: string;
+  fileName?: string;
+};
+
 async function readJson<T>(response: Response): Promise<ApiResponse<T>> {
   return (await response.json()) as ApiResponse<T>;
 }
 
 const MIN_REVIEW_DWELL_MS = 3000;
+const MAX_IMAGES_PER_NOTE = 5;
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+
+type DraftImage = { file: File; previewUrl: string };
+
+function revokeDraftPreviews(items: DraftImage[]): void {
+  items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+}
 
 type ReviewPersistResult = "saved" | "skipped" | "failed";
 
@@ -71,6 +86,9 @@ export default function ReviewPage() {
   const [editTagNames, setEditTagNames] = useState<string[]>([]);
   const [tagSummary, setTagSummary] = useState<Tag[]>([]);
   const [tagInput, setTagInput] = useState("");
+  const [currentImages, setCurrentImages] = useState<NoteImageItem[]>([]);
+  const [editDraftFiles, setEditDraftFiles] = useState<DraftImage[]>([]);
+  const [editPendingDeleteIds, setEditPendingDeleteIds] = useState<string[]>([]);
 
   const currentItem = useMemo(() => batch?.notes[index] ?? null, [batch, index]);
   const total = batch?.notes.length ?? 0;
@@ -103,6 +121,12 @@ export default function ReviewPage() {
       noteEnteredAtRef.current = Date.now();
     }
   }, [currentItem]);
+
+  const editDraftRef = useRef(editDraftFiles);
+  editDraftRef.current = editDraftFiles;
+  useEffect(() => {
+    return () => revokeDraftPreviews(editDraftRef.current);
+  }, []);
 
   function updateLocale(nextLocale: Locale): void {
     setLocale(nextLocale);
@@ -228,15 +252,38 @@ export default function ReviewPage() {
     setCurrentTags(payload.data);
   }, [currentItem?.note.id]);
 
+  const loadImagesForCurrentNote = useCallback(async (): Promise<void> => {
+    const noteId = currentItem?.note.id;
+    if (!noteId) {
+      setCurrentImages([]);
+      return;
+    }
+    const res = await fetch(`/api/notes/${noteId}/images`);
+    const payload = await readJson<NoteImageItem[]>(res);
+    if (!res.ok || !payload.data) {
+      setCurrentImages([]);
+      return;
+    }
+    setCurrentImages(payload.data ?? []);
+  }, [currentItem?.note.id]);
+
   useEffect(() => {
     void loadBatch();
   }, [loadBatch]);
 
+  // When the current review note changes: clear note-scoped image and edit state so we never
+  // show or carry over data from the previous note; then load tags and images for the new note.
   useEffect(() => {
+    setCurrentImages([]);
+    revokeDraftPreviews(editDraftRef.current);
+    setEditDraftFiles([]);
+    setEditPendingDeleteIds([]);
+    setEditing(false);
     setTagInput("");
     void loadTagsForCurrentNote();
+    void loadImagesForCurrentNote();
     void loadTagSummary();
-  }, [loadTagSummary, loadTagsForCurrentNote]);
+  }, [loadTagSummary, loadTagsForCurrentNote, loadImagesForCurrentNote]);
 
   useEffect(() => {
     const handlePageHide = (): void => {
@@ -258,6 +305,8 @@ export default function ReviewPage() {
     setEditContent(currentItem.note.content);
     setEditTagNames(currentTags.map((tag) => tag.name));
     setTagInput("");
+    setEditDraftFiles([]);
+    setEditPendingDeleteIds([]);
     setEditing(true);
   }
 
@@ -287,9 +336,12 @@ export default function ReviewPage() {
   }
 
   function resetReviewEditState(): void {
+    revokeDraftPreviews(editDraftFiles);
     setEditing(false);
     setEditTagNames([]);
     setTagInput("");
+    setEditDraftFiles([]);
+    setEditPendingDeleteIds([]);
   }
 
   async function attachTagNames(noteId: string, tagNames: string[]): Promise<Tag[]> {
@@ -369,10 +421,34 @@ export default function ReviewPage() {
       if (tagNamesToAttach.length > 0) {
         await attachTagNames(currentItem.note.id, tagNamesToAttach);
       }
+      let imageOpFailed = false;
+      for (const draft of editDraftFiles) {
+        const { file } = draft;
+        if (!ALLOWED_IMAGE_TYPES.includes(file.type) || file.size > MAX_IMAGE_SIZE_BYTES) continue;
+        const form = new FormData();
+        form.append("file", file);
+        const imgRes = await fetch(`/api/notes/${currentItem.note.id}/images`, { method: "POST", body: form });
+        if (!imgRes.ok) {
+          imageOpFailed = true;
+          setError(t.errorImageUpload);
+        }
+      }
+      for (const imageId of editPendingDeleteIds) {
+        const delRes = await fetch(`/api/notes/${currentItem.note.id}/images/${imageId}`, { method: "DELETE" });
+        if (!delRes.ok) {
+          imageOpFailed = true;
+          setError(t.errorImageUpload);
+        }
+      }
 
       setTagInput("");
       setEditTagNames([]);
-      await Promise.all([loadTagsForCurrentNote(), loadTagSummary()]);
+      setEditDraftFiles([]);
+      setEditPendingDeleteIds([]);
+      await Promise.all([loadTagsForCurrentNote(), loadImagesForCurrentNote(), loadTagSummary()]);
+      if (imageOpFailed) {
+        setError(t.errorImageUpload);
+      }
       setEditing(false);
     } catch (saveError) {
       if (saveError instanceof Error && saveError.message === EDIT_ERROR.DETACH_TAG) {
@@ -382,7 +458,7 @@ export default function ReviewPage() {
       } else {
         setError(t.errorUpdateNote);
       }
-      await Promise.all([loadTagsForCurrentNote(), loadTagSummary()]);
+      await Promise.all([loadTagsForCurrentNote(), loadImagesForCurrentNote(), loadTagSummary()]);
     } finally {
       setBusy(false);
     }
@@ -571,6 +647,72 @@ export default function ReviewPage() {
                   </div>
                 ) : null}
               </div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-slate-700">{t.imagesLabel}</p>
+                {currentImages
+                  .filter((img) => !editPendingDeleteIds.includes(img.id))
+                  .map((img) => (
+                    <div key={img.id} className="relative inline-block">
+                      <img src={img.url} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setEditPendingDeleteIds((prev) => [...prev, img.id])}
+                        disabled={busy}
+                        className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-60"
+                        aria-label={t.removeImage}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                {editDraftFiles.map((draft, i) => (
+                  <div key={`draft-${i}`} className="relative inline-block">
+                    <img
+                      src={draft.previewUrl}
+                      alt=""
+                      className="h-16 w-16 rounded border border-slate-200 object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        URL.revokeObjectURL(draft.previewUrl);
+                        setEditDraftFiles((prev) => prev.filter((_, j) => j !== i));
+                      }}
+                      disabled={busy}
+                      className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-60"
+                      aria-label={t.removeImage}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {currentImages.filter((img) => !editPendingDeleteIds.includes(img.id)).length + editDraftFiles.length < MAX_IMAGES_PER_NOTE ? (
+                  <input
+                    type="file"
+                    accept={ALLOWED_IMAGE_TYPES.join(",")}
+                    disabled={busy}
+                    className="block text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-slate-700 disabled:opacity-60"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      const valid = files.filter(
+                        (f) => ALLOWED_IMAGE_TYPES.includes(f.type) && f.size <= MAX_IMAGE_SIZE_BYTES,
+                      );
+                      const visible = currentImages.filter((img) => !editPendingDeleteIds.includes(img.id)).length;
+                      setEditDraftFiles((prev) =>
+                        prev.concat(
+                          valid.slice(0, Math.max(0, MAX_IMAGES_PER_NOTE - visible - prev.length)).map((file) => ({
+                            file,
+                            previewUrl: URL.createObjectURL(file),
+                          })),
+                        ),
+                      );
+                      e.target.value = "";
+                    }}
+                  />
+                ) : (
+                  <p className="text-[11px] text-amber-600">{t.imageLimitReached}</p>
+                )}
+              </div>
               <div className="flex gap-2">
                 <button
                   type="submit"
@@ -595,6 +737,18 @@ export default function ReviewPage() {
                   {currentItem.note.title?.trim() ? currentItem.note.title : t.untitled}
                 </h2>
                 <p className="whitespace-pre-wrap text-sm text-slate-700">{currentItem.note.content}</p>
+                {currentImages.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {currentImages.map((img) => (
+                      <img
+                        key={img.id}
+                        src={img.url}
+                        alt=""
+                        className="h-12 w-12 rounded border border-slate-200 object-cover"
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <div className="flex flex-wrap gap-2">
                 {currentTags.map((tag) => (

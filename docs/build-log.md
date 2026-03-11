@@ -716,3 +716,136 @@ New work should be logged as: `Phase X — Milestone Y`.
 
 **Review edit save loading label**
 - Review edit mode Save button now shows a loading label (`t.saving`, e.g. "Saving...") while save is in flight, consistent with Notes. Added `saving` to review i18n in en and zh.
+
+---
+
+## Phase 1 — Milestone 5: Image Attachments
+
+### Summary
+- **Storage:** Private Supabase bucket (`note-images`). Images are served via **signed URLs** generated in the service layer. Upload is **single-file-per-request**; the UI loops and calls `POST /api/notes/[id]/images` once per image.
+- **Create flow:** User adds images in local draft (previews via `URL.createObjectURL`). On Save note, the note is created first, then each draft image is uploaded (POST per file). If note creation fails, no uploads occur. If uploads fail after note creation, the note remains; UI reports errors.
+- **Edit flow (Notes and Review):** Existing images load from GET images; user can add draft files, remove drafts, or mark existing images for delete (pendingDelete). On Save: PATCH note, upload new files (POST each), DELETE each pending-delete image. Metadata is **soft-deleted**; storage object is hard-deleted. Image-level delete is final.
+- **Note delete and Undo:** On note soft-delete, note and image metadata are soft-deleted; storage objects are **not** deleted immediately. When the **client-side Undo timeout** fires, the UI calls **`POST /api/notes/[id]/images/cleanup-after-undo-expiry`**, which invokes **`deleteStorageObjectsForNoteId(noteId)`** on the server. Restoring a note restores image metadata via `restoreImagesByNoteId`.
+
+### Files changed / added
+- **Prisma:**
+  `prisma/schema.prisma` — added `NoteImage` model and `noteImages` relation on `Note`.
+  Migration: `20260304120000_add_note_image`.
+
+- **Storage:**
+  `lib/storage/supabaseStorage.ts` — `uploadImage`, `deleteImage` (404 treated as success), `createSignedUrl`.
+  Bucket: `note-images`.
+
+- **Repository:**
+  `lib/repositories/noteImageRepository.ts` —
+  `createImage`, `findImagesByNoteId`, `findImagesByNoteIdIncludeDeleted`,
+  `findImageById`, `softDeleteImage`, `softDeleteImagesByNoteId`, `restoreImagesByNoteId`.
+
+- **Service:**
+  `lib/services/noteImageService.ts` —
+  validation (max 5 images per note, 5MB limit, JPEG/PNG/WebP),
+  signed URLs generated in the service layer,
+  idempotent delete behavior,
+  `deleteStorageObjectsForNoteId` used for Undo expiry cleanup.
+
+- **API:**
+  `app/api/notes/[id]/images/route.ts`
+  - GET list images
+  - POST single image upload
+
+  `app/api/notes/[id]/images/[imageId]/route.ts`
+  - DELETE image
+
+  `app/api/notes/[id]/images/cleanup-after-undo-expiry/route.ts`
+  - POST cleanup endpoint (calls `deleteStorageObjectsForNoteId`).
+
+  Note DELETE and restore routes now call:
+  - `softDeleteImagesByNoteId`
+  - `restoreImagesByNoteId`.
+
+- **UI:**
+  `app/notes/page.tsx`
+  - Create form: image file input and draft previews
+  - Edit: existing images + pending delete state
+  - Upload and delete executed on Save
+  - Note card displays image thumbnails
+  - Undo expiry calls cleanup API
+
+  `app/review/page.tsx`
+  - Display images for current review note
+  - Edit mode supports adding draft images and removing existing images
+  - Save performs upload and delete operations
+
+- **i18n:**
+  `lib/i18n/messages/en.ts`, `zh.ts`
+  - `imagesLabel`
+  - `imageLimitReached`
+  - `removeImage`
+  - `errorImageUpload`
+
+- **Smoke test:**
+  `scripts/smoke-api.ts`
+  - GET image list (empty)
+  - POST one image (minimal JPEG)
+  - GET list again (verify signed URLs)
+  - DELETE image
+  - GET list empty
+
+  If Supabase is not configured and upload returns 500, the smoke test reports a **partial-verification skip** for upload/delete/signed-URL checks instead of treating the image flow as fully verified.
+
+### Review image-state bug fix
+During manual testing, images added to one review note appeared on other notes in the same batch.
+
+Root cause:
+- The Review page did not reload images when the current note changed.
+- Note-scoped edit state (`currentImages`, draft files, pending-delete ids) persisted across navigation.
+
+Fix:
+- On review note change:
+  - clear `currentImages`
+  - revoke and clear draft previews
+  - clear `editPendingDeleteIds`
+  - exit edit mode
+  - reload tags and images for the new note
+
+This prevents image and edit state from leaking across notes during Review navigation.
+
+### Invariants
+- Layering: no Prisma in API routes; storage access isolated in `lib/storage`; signed URLs generated only in the service layer.
+- Upload limit: current implementation maintains `existingImages + newUploads <= 5` for the current single-file, sequential upload flow.
+- Image delete: storage object is hard-deleted while metadata is soft-deleted; operation is idempotent (already deleted / storage 404 treated as success).
+- Undo expiry cleanup path: client timeout → UI calls cleanup API → API runs `deleteStorageObjectsForNoteId(noteId)`.
+
+### Environment
+Image upload and signed URLs require Supabase configuration:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+Create a **private** storage bucket named `note-images`.
+
+If Supabase is not configured, image upload returns 500 and the smoke test skips upload assertions.
+
+### Manual validation
+- Notes create: add draft images → save → thumbnails render correctly.
+- Notes edit: add/remove images → save persists correctly.
+- Review edit: add/remove images → images remain isolated per note when navigating Prev/Next.
+- Note delete + Undo: restoring note restores image metadata.
+
+### Known limitation (image-count concurrency)
+The per-note image limit (5) is enforced with a read-then-check in the service layer.
+
+This is safe only because:
+- the API is **single-file-per-request**
+- the UI uploads **sequentially**
+
+It is **not race-proof** for future parallel or batch uploads. Stronger enforcement (e.g., advisory lock or transactional check) should be added before introducing multi-file or concurrent upload.
+
+### Follow-ups
+Planned improvements for future milestones:
+
+- Add **click-to-enlarge image viewer** for thumbnails.
+- Align **Notes and Review note card layouts**.
+- Align **edit layout ordering** (images vs tags) across Notes and Review.
+- In Review edit mode, **disable or hide Prev/Next navigation** until Save or Cancel.
+- Add **Undo toast for note delete in Review** (currently only in Notes view).
