@@ -50,6 +50,8 @@ export const enMessages = {
     imageLimitReached: "Max 5 images per note.",
     removeImage: "Remove image",
     errorImageUpload: "Image upload failed.",
+    closeViewer: "Close",
+    attachedImageAlt: "Attached image",
   },
   review: {
     title: "Review Today",
@@ -89,5 +91,7 @@ export const enMessages = {
     imageLimitReached: "Max 5 images per note.",
     removeImage: "Remove image",
     errorImageUpload: "Image upload failed.",
+    closeViewer: "Close",
+    attachedImageAlt: "Attached image",
   },
 } as const;

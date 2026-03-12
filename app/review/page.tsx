@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ImageViewer } from "@/components/ImageViewer";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { EDIT_ERROR } from "@/lib/constants/editErrorCodes";
 import { Locale, getInitialLocale, getMessages, persistLocale } from "@/lib/i18n";
@@ -89,6 +90,7 @@ export default function ReviewPage() {
   const [currentImages, setCurrentImages] = useState<NoteImageItem[]>([]);
   const [editDraftFiles, setEditDraftFiles] = useState<DraftImage[]>([]);
   const [editPendingDeleteIds, setEditPendingDeleteIds] = useState<string[]>([]);
+  const [viewerImageUrl, setViewerImageUrl] = useState<string | null>(null);
 
   const currentItem = useMemo(() => batch?.notes[index] ?? null, [batch, index]);
   const total = batch?.notes.length ?? 0;
@@ -520,6 +522,12 @@ export default function ReviewPage() {
 
   return (
     <div className="space-y-6">
+      <ImageViewer
+        src={viewerImageUrl}
+        open={!!viewerImageUrl}
+        onClose={() => setViewerImageUrl(null)}
+        closeLabel={t.closeViewer}
+      />
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold text-slate-800">{t.title}</h1>
@@ -653,10 +661,23 @@ export default function ReviewPage() {
                   .filter((img) => !editPendingDeleteIds.includes(img.id))
                   .map((img) => (
                     <div key={img.id} className="relative inline-block">
-                      <img src={img.url} alt="" className="h-16 w-16 rounded border border-slate-200 object-cover" />
                       <button
                         type="button"
-                        onClick={() => setEditPendingDeleteIds((prev) => [...prev, img.id])}
+                        onClick={() => setViewerImageUrl(img.url)}
+                        className="inline-block cursor-pointer rounded border-0 bg-transparent p-0 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      >
+                        <img
+                          src={img.url}
+                          alt={t.attachedImageAlt}
+                          className="h-16 w-16 rounded border border-slate-200 object-cover"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditPendingDeleteIds((prev) => [...prev, img.id]);
+                        }}
                         disabled={busy}
                         className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-60"
                         aria-label={t.removeImage}
@@ -667,14 +688,21 @@ export default function ReviewPage() {
                   ))}
                 {editDraftFiles.map((draft, i) => (
                   <div key={`draft-${i}`} className="relative inline-block">
-                    <img
-                      src={draft.previewUrl}
-                      alt=""
-                      className="h-16 w-16 rounded border border-slate-200 object-cover"
-                    />
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={() => setViewerImageUrl(draft.previewUrl)}
+                      className="inline-block cursor-pointer rounded border-0 bg-transparent p-0 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    >
+                      <img
+                        src={draft.previewUrl}
+                        alt={t.attachedImageAlt}
+                        className="h-16 w-16 rounded border border-slate-200 object-cover"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
                         URL.revokeObjectURL(draft.previewUrl);
                         setEditDraftFiles((prev) => prev.filter((_, j) => j !== i));
                       }}
@@ -740,12 +768,18 @@ export default function ReviewPage() {
                 {currentImages.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {currentImages.map((img) => (
-                      <img
+                      <button
                         key={img.id}
-                        src={img.url}
-                        alt=""
-                        className="h-12 w-12 rounded border border-slate-200 object-cover"
-                      />
+                        type="button"
+                        onClick={() => setViewerImageUrl(img.url)}
+                        className="inline-block cursor-pointer rounded border-0 bg-transparent p-0 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      >
+                        <img
+                          src={img.url}
+                          alt={t.attachedImageAlt}
+                          className="h-12 w-12 rounded border border-slate-200 object-cover"
+                        />
+                      </button>
                     ))}
                   </div>
                 ) : null}

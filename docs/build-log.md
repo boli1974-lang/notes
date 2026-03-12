@@ -733,7 +733,7 @@ New work should be logged as: `Phase X — Milestone Y`.
   Migration: `20260304120000_add_note_image`.
 
 - **Storage:**
-  `lib/storage/supabaseStorage.ts` — `uploadImage`, `deleteImage` (404 treated as success), `createSignedUrl`.
+  `lib/storage/supabaseStorage.ts` — `uploadImage`, `deleteImage` (404 treated as success - If storage deletion returns 404, the system assumes the file is already gone and continues without failing), `createSignedUrl`.
   Bucket: `note-images`.
 
 - **Repository:**
@@ -816,6 +816,28 @@ This prevents image and edit state from leaking across notes during Review navig
 - Image delete: storage object is hard-deleted while metadata is soft-deleted; operation is idempotent (already deleted / storage 404 treated as success).
 - Undo expiry cleanup path: client timeout → UI calls cleanup API → API runs `deleteStorageObjectsForNoteId(noteId)`.
 
+### Known limitation — image-count concurrency
+
+The per-note image limit (5) is currently enforced in the service layer using a
+read-then-check pattern:
+
+existingImages.length >= MAX_IMAGES_PER_NOTE
+
+This is safe for the current implementation because:
+
+- the API accepts **one file per request**
+- the UI uploads **sequentially** (one request at a time)
+
+Under these conditions, concurrent uploads cannot occur.
+
+However, this approach is **not race-proof** if future changes introduce:
+
+- parallel uploads
+- multi-file upload endpoints
+- multiple clients uploading simultaneously
+
+Before introducing parallel or batch uploads, stronger enforcement should be
+added (for example a transactional check or advisory lock).
 ### Environment
 Image upload and signed URLs require Supabase configuration:
 
@@ -832,20 +854,50 @@ If Supabase is not configured, image upload returns 500 and the smoke test skips
 - Review edit: add/remove images → images remain isolated per note when navigating Prev/Next.
 - Note delete + Undo: restoring note restores image metadata.
 
-### Known limitation (image-count concurrency)
-The per-note image limit (5) is enforced with a read-then-check in the service layer.
-
-This is safe only because:
-- the API is **single-file-per-request**
-- the UI uploads **sequentially**
-
-It is **not race-proof** for future parallel or batch uploads. Stronger enforcement (e.g., advisory lock or transactional check) should be added before introducing multi-file or concurrent upload.
-
 ### Follow-ups
 Planned improvements for future milestones:
 
-- Add **click-to-enlarge image viewer** for thumbnails.
+- ~~Add **click-to-enlarge image viewer** for thumbnails.~~ (Done in Milestone 5.1.)
 - Align **Notes and Review note card layouts**.
 - Align **edit layout ordering** (images vs tags) across Notes and Review.
 - In Review edit mode, **disable or hide Prev/Next navigation** until Save or Cancel.
 - Add **Undo toast for note delete in Review** (currently only in Notes view).
+
+---
+
+## Phase 1 — Milestone 5.1: Image Viewer Polish
+
+### Summary
+
+- **Shared lightbox:** Added `components/ImageViewer.tsx` — modal overlay, enlarged image, close via X / backdrop / Escape. Body scroll locks when open; focus moves to the close button on open; clicking the image content does not close (content container uses `stopPropagation`); Escape listener is removed on close.
+- **Notes:** Thumbnails in note cards, create-form drafts, and edit-panel existing/draft images open the viewer. Final implementation uses native `<button type="button">` thumbnail triggers for reliable keyboard activation; remove buttons remain separate siblings and do not open the viewer.
+- **Review:** Same viewer behavior and native-button thumbnail triggers for view mode and edit mode (existing images + draft previews).
+- **i18n:** `closeViewer`, `attachedImageAlt` added to `notes` and `review` in `en.ts` and `zh.ts`. Alt fallback: `"Attached image"` / `"附件图片"`.
+- **Image rendering:** Raw `<img>` used for thumbnails and viewer to support blob URLs and signed URLs without `next/image` config changes in this milestone.
+
+### Files changed / added
+
+- **Created:** `components/ImageViewer.tsx` — client component, body scroll lock, focus management, Escape cleanup, content click does not close.
+- **Modified:** `app/notes/page.tsx` — `viewerImageUrl` state, `<ImageViewer>`, clickable thumbnails using native buttons, remove buttons kept separate.
+- **Modified:** `app/review/page.tsx` — same integration.
+- **Modified:** `lib/i18n/messages/en.ts`, `lib/i18n/messages/zh.ts` — `closeViewer`, `attachedImageAlt`.
+
+### Invariants
+
+- Viewer is presentational only; no API or domain logic.
+- Same component and behavior in Notes and Review.
+- M5 image upload/delete and Review per-note state unchanged.
+
+### Manual verification
+
+- Notes/Review: open viewer from thumbnails (view + edit); close via X, backdrop, Escape.
+- Background does not scroll while viewer is open.
+- Clicking the enlarged image does not close the modal.
+- Delete/remove (×) on a thumbnail does not open the viewer.
+- After closing, pressing Escape does not re-open or cause errors.
+- Regression: image add/remove, save, per-note isolation on Review still work.
+- Manual validation confirmed keyboard activation works after switching thumbnail triggers to native buttons. Tab-to-thumbnail then Enter opens the viewer in Notes (non-edit and edit) and Review (non-edit and edit); Space also opens via native button behavior.
+
+### Follow-up UX note
+
+- In edit mode, the next tab stop after an image thumbnail is the remove button. This keeps the remove control keyboard-accessible, but it may make accidental pending-delete easier for keyboard users. Consider refining this interaction in a later milestone focused on edit-mode UX / keyboard flow.

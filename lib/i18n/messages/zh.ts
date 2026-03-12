@@ -50,6 +50,8 @@ export const zhMessages = {
     imageLimitReached: "每条笔记最多 5 张图片。",
     removeImage: "移除图片",
     errorImageUpload: "图片上传失败。",
+    closeViewer: "关闭",
+    attachedImageAlt: "附件图片",
   },
   review: {
     title: "今日复习",
@@ -89,5 +91,7 @@ export const zhMessages = {
     imageLimitReached: "每条笔记最多 5 张图片。",
     removeImage: "移除图片",
     errorImageUpload: "图片上传失败。",
+    closeViewer: "关闭",
+    attachedImageAlt: "附件图片",
   },
 } as const;
