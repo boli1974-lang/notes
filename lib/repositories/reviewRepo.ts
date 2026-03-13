@@ -1,5 +1,7 @@
-import type { Note, ReviewBatch, ReviewEvent } from "@prisma/client";
+import type { Note, ReviewBatch, ReviewEvent, Tag } from "@prisma/client";
 import { prisma } from "@/lib/db";
+
+export type NoteWithTags = Note & { tags: Tag[] };
 
 type BatchItemWithNote = {
   id: string;
@@ -7,6 +9,10 @@ type BatchItemWithNote = {
   noteId: string;
   position: number;
   note: Note;
+};
+
+export type BatchItemWithNoteAndTags = Omit<BatchItemWithNote, "note"> & {
+  note: NoteWithTags;
 };
 
 type OptionalUserWhere = { userId?: string | null };
@@ -58,14 +64,35 @@ export async function createReviewBatchItems(
 
 export async function findBatchItemsByBatchId(
   batchId: string,
-): Promise<BatchItemWithNote[]> {
-  return prisma.reviewBatchItem.findMany({
+): Promise<BatchItemWithNoteAndTags[]> {
+  const items = await prisma.reviewBatchItem.findMany({
     where: {
       batchId,
       note: { deletedAt: null },
     },
-    include: { note: true },
+    include: {
+      note: {
+        include: {
+          noteTags: {
+            orderBy: { tag: { createdAt: "desc" } },
+            include: { tag: true },
+          },
+        },
+      },
+    },
     orderBy: { position: "asc" },
+  });
+
+  return items.map((item) => {
+    const { noteTags, ...noteData } = item.note;
+    const tags = noteTags.map((nt) => nt.tag);
+    return {
+      id: item.id,
+      batchId: item.batchId,
+      noteId: item.noteId,
+      position: item.position,
+      note: { ...noteData, tags },
+    };
   });
 }
 

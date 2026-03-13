@@ -4,11 +4,13 @@ import {
   getNoteById as getNoteByIdRepo,
   hardDeleteNote as hardDeleteNoteRepo,
   listNotes as listNotesRepo,
+  listNotesWithTags as listNotesWithTagsRepo,
   restoreNote as restoreNoteRepo,
   softDeleteNote as softDeleteNoteRepo,
   updateNote as updateNoteRepo,
   type CreateNoteInput,
   type ListNotesOptions,
+  type NoteWithTags,
   type UpdateNoteInput,
 } from "@/lib/repositories/noteRepository";
 
@@ -26,6 +28,12 @@ export async function getNoteById(
 
 export async function listNotes(options: ListNotesOptions = {}): Promise<Note[]> {
   return listNotesRepo(options);
+}
+
+export async function listNotesWithTags(
+  options: ListNotesOptions = {},
+): Promise<NoteWithTags[]> {
+  return listNotesWithTagsRepo(options);
 }
 
 export async function updateNote(

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createNote, listNotes } from "@/lib/services/noteService";
+import { createNote, listNotesWithTags } from "@/lib/services/noteService";
 
 type NoteCreateBody = {
   title?: string | null;
@@ -63,7 +63,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       return badRequest("tagId must be a valid UUID.");
     }
 
-    const notes = await listNotes({
+    const notes = await listNotesWithTags({
       userId: searchParams.get("userId") ?? undefined,
       search: searchParams.get("search") ?? undefined,
       tagId,

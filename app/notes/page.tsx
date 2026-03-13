@@ -209,17 +209,23 @@ export default function NotesPage() {
     setError(null);
     try {
       const res = await fetch(`/api/notes?${queryString}`);
-      const payload = await readJson<Note[]>(res);
+      const payload = await readJson<(Note & { tags?: Tag[] })[]>(res);
       if (!res.ok || !payload.data) {
         setError(payload.error ?? getMessages(localeRef.current).notes.errorLoadNotes);
         setNotes([]);
+        setTagsByNote({});
         return;
       }
 
-      setNotes(payload.data);
-      setTagsByNote({});
-      await Promise.all(payload.data.map((note) => loadTagsForNote(note.id)));
-      await Promise.all(payload.data.map((note) => loadImagesForNote(note.id)));
+      const data = payload.data;
+      setNotes(data.map((n) => ({ id: n.id, title: n.title, content: n.content, createdAt: n.createdAt })));
+      const tagsByNoteAcc: Record<string, Tag[]> = {};
+      for (let i = 0; i < data.length; i++) {
+        const n = data[i];
+        tagsByNoteAcc[n.id] = n.tags ?? [];
+      }
+      setTagsByNote(tagsByNoteAcc);
+      await Promise.all(data.map((note) => loadImagesForNote(note.id)));
       await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch (loadError) {
       if (loadError instanceof Error && loadError.message) {
@@ -230,11 +236,15 @@ export default function NotesPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadImagesForNote, loadTagSummary, loadTagsForNote, loadUnusedTags, queryString]);
+  }, [loadImagesForNote, loadTagSummary, loadUnusedTags, queryString]);
 
+  const lastLoadedQueryRef = useRef<string | null>(null);
   useEffect(() => {
-    void loadNotes();
-  }, [loadNotes]);
+    if (lastLoadedQueryRef.current !== queryString) {
+      lastLoadedQueryRef.current = queryString;
+      void loadNotes();
+    }
+  }, [loadNotes, queryString]);
 
   useEffect(() => {
     return () => {

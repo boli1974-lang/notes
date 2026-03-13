@@ -1,5 +1,7 @@
-import { Prisma, type Note } from "@prisma/client";
+import { Prisma, type Note, type Tag } from "@prisma/client";
 import { prisma } from "@/lib/db";
+
+export type NoteWithTags = Note & { tags: Tag[] };
 
 export type CreateNoteInput = {
   title?: string | null;
@@ -94,6 +96,55 @@ export async function listNotes(options: ListNotesOptions = {}): Promise<Note[]>
     },
     take: options.take,
     skip: options.skip,
+  });
+}
+
+export async function listNotesWithTags(
+  options: ListNotesOptions = {},
+): Promise<NoteWithTags[]> {
+  const where: Prisma.NoteWhereInput = withOptionalUserFilter(
+    {
+      ...(options.includeDeleted ? {} : { deletedAt: null }),
+      ...(options.tagId
+        ? {
+            noteTags: {
+              some: {
+                tagId: options.tagId,
+              },
+            },
+          }
+        : {}),
+      ...(options.search
+        ? {
+            OR: [
+              { title: { contains: options.search, mode: "insensitive" } },
+              { content: { contains: options.search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    },
+    options.userId,
+  );
+
+  const rows = await prisma.note.findMany({
+    where,
+    orderBy: {
+      [options.sortBy ?? "createdAt"]: options.sortOrder ?? "desc",
+    },
+    take: options.take,
+    skip: options.skip,
+    include: {
+      noteTags: {
+        orderBy: { tag: { createdAt: "desc" } },
+        include: { tag: true },
+      },
+    },
+  });
+
+  return rows.map((note) => {
+    const { noteTags, ...noteData } = note;
+    const tags = noteTags.map((nt) => nt.tag);
+    return { ...noteData, tags };
   });
 }
 

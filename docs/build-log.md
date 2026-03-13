@@ -901,3 +901,106 @@ Planned improvements for future milestones:
 ### Follow-up UX note
 
 - In edit mode, the next tab stop after an image thumbnail is the remove button. This keeps the remove control keyboard-accessible, but it may make accidental pending-delete easier for keyboard users. Consider refining this interaction in a later milestone focused on edit-mode UX / keyboard flow.
+
+---
+
+## Phase 1 — Milestone 6: Performance — Remove N+1 Tag Queries
+
+### Summary
+
+- **Goal:** Eliminate the N+1 tag query pattern so that Notes and Review receive note tags as part of the main data load.
+- **Notes:** `GET /api/notes` now returns notes with `tags: { id, name }[]` included. The Notes page populates `tagsByNote` from the list response and no longer performs per-note tag fetches on initial load. `loadTagsForNote` remains only for targeted refresh after mutations (e.g. after save).
+- **Review:** `GET /api/review/today` returns batch notes with `tags` included. On batch load and on Prev/Next navigation, the UI uses `currentItem.note.tags` from the batch; no per-note tag fetch during navigation. `loadTagsForCurrentNote` is used only as a targeted refresh fallback after mutations (e.g. after save in edit mode).
+- **Tag ordering:** Deterministic order by `tag.createdAt` desc (consistent with existing `findTagsByNoteId`). NoteTag has no attach-order column; tag creation order is used.
+- **Layering:** Prisma only in repositories; services shape data; APIs call services. No Prisma in API routes.
+
+### Files changed / added
+
+- **lib/repositories/noteRepository.ts:** Added `listNotesWithTags(options)` with `include: { noteTags: { orderBy: { tag: { createdAt: "desc" } }, include: { tag: true } } }`; returns `NoteWithTags[]` (notes with `tags: Tag[]`).
+- **lib/repositories/reviewRepo.ts:** `findBatchItemsByBatchId` now includes note tags (same include/orderBy), returns `BatchItemWithNoteAndTags[]` with `note: NoteWithTags`.
+- **lib/services/noteService.ts:** Added `listNotesWithTags(options)` calling repo.
+- **lib/services/reviewService.ts:** `ReviewBatchNote` type updated to `note: Note & { tags: Tag[] }`; batch from repo already has tags.
+- **app/api/notes/route.ts:** GET uses `listNotesWithTags`; response shape unchanged except each note has `tags`.
+- **app/notes/page.tsx:** `loadNotes` parses list response as notes with `tags`; sets `tagsByNote` from response; removed `Promise.all(..., loadTagsForNote)` on initial load.
+- **app/review/page.tsx:** `ReviewNote` type includes `tags?: Tag[]`. Effect on note change sets `currentTags` from `currentItem?.note?.tags` and does not call `loadTagsForCurrentNote`; only clears edit state and loads images. `loadTagsForCurrentNote` still used after save (targeted refresh).
+- **scripts/smoke-api.ts:** `NoteResponse` and review batch note type include `tags`; assertions that list notes and review batch notes return a `tags` array on each note.
+
+### Invariants
+
+- No Prisma in API routes.
+- Soft-delete and review batch behavior unchanged.
+- Tag shape to UI remains `{ id: string; name: string }[]`.
+- Notes with zero tags return `tags: []`.
+
+### Smoke test
+
+- Existing smoke tests extended: list notes returns notes with `tags` array; review today returns batch notes with `tags` array. Run `npm run smoke:api` with dev server (`npm run dev`) to verify.
+
+### Manual validation
+
+- Notes page: DevTools network tab — no per-note `/api/notes/{id}/tags` requests after loading the notes list.
+- Review: Batch load and Prev/Next navigation — no tag fetches; tags from batch. Tag attach/detach and save still work; after save, targeted tag refresh (if used) is acceptable.
+
+### Efficiency follow-up (no behavior change)
+
+**Inefficiencies found:**
+
+1. **Notes page — `setTagsByNote` construction:** Building `tagsByNote` with `data.reduce((acc, n) => ({ ...acc, [n.id]: n.tags ?? [] }), {})` reallocates a new object on every iteration (O(n²) object spreads). Unnecessary for initial load with many notes.
+
+2. **Review page — `loadTagSummary()` on every note change:** The “current note changed” effect called `loadTagSummary()` on every Prev/Next. Tag summary (full tag list for suggestions) does not depend on which note is current; it only changes when tags are created/attached/detached. So the call was redundant on navigation.
+
+3. **Other work reviewed and left as-is:**  
+   - Notes initial load: `loadTagSummary()` and `loadUnusedTags()` are required for the page. Per-note `loadImagesForNote()` remains N requests (image N+1 explicitly out of scope).  
+   - Review note change: `loadImagesForCurrentNote()` is still required (images not in batch; out of scope). Clearing edit state and setting `currentTags` from batch are necessary.  
+   No other clearly unnecessary work was removed.
+
+**Changes made:**
+
+1. **Notes — `app/notes/page.tsx`:** Replaced the reducer with a single mutable accumulator: build `tagsByNoteAcc` in a `for` loop with `tagsByNoteAcc[n.id] = n.tags ?? []`, then `setTagsByNote(tagsByNoteAcc)`. Behavior unchanged; fewer allocations.
+
+2. **Review — `app/review/page.tsx`:** Removed `loadTagSummary()` from the note-change effect. Tag summary is now loaded only when the batch is available: a dedicated `useEffect` runs when `batch` is truthy and calls `loadTagSummary()`. It continues to be refreshed after save (success and catch) so that new tags from mutations are visible. Prev/Next no longer triggers a tag-summary request.
+
+**Intentionally left unchanged:**
+
+- Image loading: Notes still run `Promise.all(data.map((note) => loadImagesForNote(note.id)))`; Review still runs `loadImagesForCurrentNote()` on note change. Image N+1 and batch inclusion were out of scope.  
+- Notes: `loadTagSummary()` and `loadUnusedTags()` on initial load; both are needed for tag UI and unused-tags section.  
+- Review: `loadImagesForCurrentNote()` in the note-change effect; required until images are included in the batch (future work).
+
+**Remaining slowness:**
+
+- Likely sources: (1) **Image loading** — N image list requests on Notes load and one per note on Review navigation. (2) **Batch size** — Review fetches up to 10 notes with tags in one request; that is already a single call. (3) **List size** — Notes fetches all matching notes in one request; pagination was out of scope. Improving image loading (e.g. including image list in list/batch or thumbnails) would be the next performance lever.
+
+### Validation complete — Milestone 6 done
+
+- **Smoke test:** Run with dev server (`npm run dev`) then `npm run smoke:api`. All assertions passed, including list notes with `tags` array and review batch notes with `tags` array.
+- **Manual validation (DevTools):**
+  - Notes page: On initial load, no per-note `/api/notes/{id}/tags` requests; only `GET /api/notes` (with tags in response) and per-note image requests.
+  - Review page: On Prev/Next navigation, no per-note tag requests; tags come from batch. No `/api/tags` request on every note change; tag summary loads once when batch is available and after save.
+- **Milestone 6 complete.** Remaining slowness appears primarily **image-related** (N image list calls on Notes load, one per note on Review navigation); image N+1 and thumbnail/batch inclusion are out of scope for this milestone and left for future work.
+
+### Duplicate requests in dev — cause and fixes
+
+**What was observed (local dev):**
+
+- Notes page load: two `GET /api/notes` requests.
+- Review page load: two `GET /api/review/today` requests.
+- After attach/detach tag and save in Review: three `GET /api/tags` requests.
+
+**Cause:**
+
+1. **Two `/api/notes` and two `/api/review/today`:** In development, **Next.js runs React Strict Mode by default**. Strict Mode double-invokes effects (mount → unmount → mount again) to surface side-effect bugs. The effects that call `loadNotes()` and `loadBatch()` therefore run twice on initial load, so two requests each. This is **dev-only**; production does not double-invoke, so you would see one request each there.
+
+2. **Three `/api/tags` after save:** (a) The effect that runs when `batch` is truthy calls `loadTagSummary()`. Under Strict Mode that effect runs twice when the batch is first set, so **two** tag-summary requests on initial Review load. (b) After save we explicitly call `loadTagSummary()` once for a **third** request. So the “three after save” are: two from the batch effect (Strict Mode) from when the page first had a batch, plus one from the save path. There was no additional app bug (e.g. multiple paths calling `loadTagSummary` after save).
+
+**Changes made (behavior unchanged, fewer redundant requests):**
+
+1. **Notes — `app/notes/page.tsx`:** The effect that calls `loadNotes()` now uses a ref `lastLoadedQueryRef` keyed by `queryString`. It only calls `loadNotes()` when `lastLoadedQueryRef.current !== queryString`, then sets the ref. So when Strict Mode runs the effect twice with the same `queryString`, the second run does not call `loadNotes()`. Result: **one** `/api/notes` on initial load in dev. When the user changes search/filter, `queryString` changes and we load again as intended.
+
+2. **Review — `app/review/page.tsx`:**  
+   - The effect that calls `loadBatch()` now uses `initialBatchLoadedRef`. It only calls `loadBatch()` once (when the ref is false), then sets the ref. So under Strict Mode we get **one** `/api/review/today` on initial load. The “Refresh Batch” button still calls `loadBatch()` directly, so refresh still works.  
+   - The effect that calls `loadTagSummary()` when `batch` is truthy now uses `loadedTagSummaryForBatchIdRef` keyed by `batch.batchId`. It only calls `loadTagSummary()` when the ref is not equal to the current `batch.batchId`, then sets the ref. So when Strict Mode runs the effect twice for the same batch, we get **one** tag-summary request. After save we still call `loadTagSummary()` once. Result: **one** `/api/tags` when the batch first loads, and **one** after save (two total in that flow instead of three).
+
+**Summary:**
+
+- **Dev-only duplicates:** The extra `/api/notes` and `/api/review/today` on initial load were from **React Strict Mode** (dev only), not from redundant app logic.
+- **Real redundancy reduced:** The batch-effect `loadTagSummary` was effectively firing twice in dev (Strict Mode); the save path correctly fired once. We deduped the batch-effect call by batchId and the initial load effects by refs so that in dev you see one request per intent. Behavior (when data loads, when we refresh after save) is unchanged.

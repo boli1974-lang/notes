@@ -1,4 +1,4 @@
-import type { Note, ReviewEvent } from "@prisma/client";
+import type { Note, ReviewEvent, Tag } from "@prisma/client";
 import { getNoteById, listNotes } from "@/lib/repositories/noteRepository";
 import {
   countReviewEventsForNoteOnDate,
@@ -17,7 +17,7 @@ const REVIEW_EXCLUSION_DAYS = 3;
 
 export type ReviewBatchNote = {
   position: number;
-  note: Note;
+  note: Note & { tags: Tag[] };
 };
 
 export type ReviewTodayBatch = {
@@ -56,7 +56,7 @@ function shuffle<T>(input: T[]): T[] {
 function toReviewTodayBatch(
   batchId: string,
   reviewDate: Date,
-  items: Array<{ position: number; note: Note }>,
+  items: Array<{ position: number; note: Note & { tags: Tag[] } }>,
 ): ReviewTodayBatch {
   return {
     batchId,

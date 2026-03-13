@@ -18,6 +18,7 @@ type ReviewNote = {
   id: string;
   title: string | null;
   content: string;
+  tags?: Tag[];
 };
 
 type ReviewBatchItem = {
@@ -229,6 +230,14 @@ export default function ReviewPage() {
     }
   }, []);
 
+  const initialBatchLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!initialBatchLoadedRef.current) {
+      initialBatchLoadedRef.current = true;
+      void loadBatch();
+    }
+  }, [loadBatch]);
+
   const loadTagSummary = useCallback(async (): Promise<void> => {
     const res = await fetch("/api/tags");
     const payload = await readJson<Tag[]>(res);
@@ -269,23 +278,31 @@ export default function ReviewPage() {
     setCurrentImages(payload.data ?? []);
   }, [currentItem?.note.id]);
 
+  // Load tag summary once when we have a batch (for edit-mode suggestions). Not on note change.
+  // Dedupe by batchId so we only call once per batch (avoids double call in React Strict Mode dev).
+  const loadedTagSummaryForBatchIdRef = useRef<string | null>(null);
   useEffect(() => {
-    void loadBatch();
-  }, [loadBatch]);
+    if (batch && loadedTagSummaryForBatchIdRef.current !== batch.batchId) {
+      loadedTagSummaryForBatchIdRef.current = batch.batchId;
+      void loadTagSummary();
+    }
+  }, [batch, loadTagSummary]);
 
-  // When the current review note changes: clear note-scoped image and edit state so we never
-  // show or carry over data from the previous note; then load tags and images for the new note.
+  // When the current review note changes: clear note-scoped image and edit state; use tags from
+  // batch (no per-note tag fetch); load images for the new note. Tag summary is not refreshed here
+  // (it is loaded once on batch load and after tag mutations in save).
   useEffect(() => {
+    setCurrentTags(currentItem?.note?.tags ?? []);
     setCurrentImages([]);
     revokeDraftPreviews(editDraftRef.current);
     setEditDraftFiles([]);
     setEditPendingDeleteIds([]);
     setEditing(false);
     setTagInput("");
-    void loadTagsForCurrentNote();
     void loadImagesForCurrentNote();
-    void loadTagSummary();
-  }, [loadTagSummary, loadTagsForCurrentNote, loadImagesForCurrentNote]);
+    // Intentionally omit currentItem?.note?.tags so we only run when note id changes, not on tags ref change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentItem?.note?.id, loadImagesForCurrentNote]);
 
   useEffect(() => {
     const handlePageHide = (): void => {

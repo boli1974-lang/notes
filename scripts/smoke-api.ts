@@ -15,13 +15,14 @@ type NoteResponse = {
   id: string;
   title: string | null;
   content: string;
+  tags?: TagResponse[];
 };
 
 type ReviewTodayResponse = {
   batchId: string;
   reviewDate: string;
   reviewedNoteIds?: string[];
-  notes: Array<{ position: number; note: { id: string } }>;
+  notes: Array<{ position: number; note: { id: string; tags?: TagResponse[] } }>;
 };
 
 type TagResponse = {
@@ -205,6 +206,11 @@ async function main(): Promise<void> {
       "list notes should include created note",
     );
     pass("listed notes includes created note");
+    assert(Array.isArray(listPayload.data), "list notes data should be array");
+    for (const note of listPayload.data ?? []) {
+      assert(Array.isArray(note.tags), "each note should have tags array (Milestone 6)");
+    }
+    pass("list notes returns notes with tags array");
 
     const patchRes = await fetch(`${baseUrl}/api/notes/${noteId}`, {
       method: "PATCH",
@@ -507,6 +513,9 @@ async function main(): Promise<void> {
     const today1 = await parseJson<ReviewTodayResponse>(todayRes1);
     assert(today1.data && today1.data.notes.length === 3, "review batch should contain 3 notes");
     createdBatchIds.add(today1.data.batchId);
+    for (const item of today1.data.notes) {
+      assert(Array.isArray(item.note.tags), "review batch note should have tags array (Milestone 6)");
+    }
     const firstBatchIds = today1.data.notes.map((item) => item.note.id);
     pass("fetched daily review batch via API");
 
