@@ -3,6 +3,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImageViewer } from "@/components/ImageViewer";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import {
+  getReviewCache,
+  invalidateNotesCache,
+  invalidateReviewCache,
+  setReviewCache,
+} from "@/lib/cache/revisitCache";
 import { EDIT_ERROR } from "@/lib/constants/editErrorCodes";
 import { Locale, getInitialLocale, getMessages, persistLocale } from "@/lib/i18n";
 import {
@@ -13,6 +19,10 @@ import {
   parseNormalizedTagNames,
   removeActiveTagToken,
 } from "@/lib/utils/tagDraft";
+
+// Module-level ref: prevents second effect run (React Strict Mode) from calling loadBatch
+// after cache hit. Reset on unmount so we run again when user navigates back.
+let reviewInitialLoadDoneRef = false;
 
 type ReviewNote = {
   id: string;
@@ -207,21 +217,49 @@ export default function ReviewPage() {
     }
   }, []);
 
+  const loadedTagSummaryForBatchIdRef = useRef<string | null>(null);
+
+  const loadTagSummary = useCallback(async (): Promise<Tag[] | undefined> => {
+    const res = await fetch("/api/tags");
+    const payload = await readJson<Tag[]>(res);
+    if (!res.ok || !payload.data) {
+      return;
+    }
+    setTagSummary(payload.data);
+    return payload.data;
+  }, []);
+
   const loadBatch = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/review/today?batchSize=10");
-      const payload = await readJson<ReviewBatch>(res);
-      if (!res.ok || !payload.data) {
-        setError(payload.error ?? getMessages(localeRef.current).review.errorLoadBatch);
+      const [batchRes, tagSummaryRes] = await Promise.all([
+        fetch("/api/review/today?batchSize=10"),
+        fetch("/api/tags"),
+      ]);
+      const batchPayload = await readJson<ReviewBatch>(batchRes);
+      const tagSummaryPayload = await readJson<Tag[]>(tagSummaryRes);
+      if (!batchRes.ok || !batchPayload.data) {
+        setError(batchPayload.error ?? getMessages(localeRef.current).review.errorLoadBatch);
         setBatch(null);
         return;
       }
-      setBatch(payload.data);
+      if (tagSummaryRes.ok && tagSummaryPayload.data) {
+        setTagSummary(tagSummaryPayload.data);
+        loadedTagSummaryForBatchIdRef.current = batchPayload.data.batchId;
+      }
+      setBatch(batchPayload.data);
       setIndex(0);
-      reviewedNoteIdsRef.current = new Set<string>(payload.data.reviewedNoteIds ?? []);
+      reviewedNoteIdsRef.current = new Set<string>(batchPayload.data.reviewedNoteIds ?? []);
       setEditing(false);
+      const reviewDate = batchPayload.data.reviewDate;
+      const cacheKey = typeof reviewDate === "string" ? reviewDate.slice(0, 10) : null;
+      if (cacheKey) {
+        setReviewCache(cacheKey, {
+          batch: batchPayload.data,
+          tagSummary: tagSummaryPayload.data ?? [],
+        });
+      }
     } catch {
       setError(getMessages(localeRef.current).review.errorLoadBatch);
       setBatch(null);
@@ -230,22 +268,59 @@ export default function ReviewPage() {
     }
   }, []);
 
-  const initialBatchLoadedRef = useRef(false);
+  const revalidateBatch = useCallback(async (): Promise<void> => {
+    const reviewDateForFetch = new Date().toISOString().slice(0, 10);
+    try {
+      const [batchRes, tagSummaryRes] = await Promise.all([
+        fetch("/api/review/today?batchSize=10"),
+        fetch("/api/tags"),
+      ]);
+      const batchPayload = await readJson<ReviewBatch>(batchRes);
+      const tagSummaryPayload = await readJson<Tag[]>(tagSummaryRes);
+      if (!batchRes.ok || !batchPayload.data) return;
+      const batchData = batchPayload.data;
+      if (new Date().toISOString().slice(0, 10) !== reviewDateForFetch) return;
+
+      setBatch(batchData);
+      setIndex((prev) => Math.max(0, Math.min(prev, batchData.notes.length - 1)));
+      setEditing(false);
+      reviewedNoteIdsRef.current = new Set<string>(batchData.reviewedNoteIds ?? []);
+      if (tagSummaryRes.ok && tagSummaryPayload.data) {
+        setTagSummary(tagSummaryPayload.data);
+      }
+      const reviewDate = batchData.reviewDate;
+      if (typeof reviewDate === "string") {
+        setReviewCache(reviewDate.slice(0, 10), {
+          batch: batchData,
+          tagSummary: tagSummaryPayload.data ?? [],
+        });
+      }
+    } catch {
+      // Keep current state; do not overwrite with error
+    }
+  }, []);
+
   useEffect(() => {
-    if (!initialBatchLoadedRef.current) {
-      initialBatchLoadedRef.current = true;
+    if (reviewInitialLoadDoneRef) return;
+    reviewInitialLoadDoneRef = true;
+    const lookupKey = new Date().toISOString().slice(0, 10);
+    const cached = getReviewCache(lookupKey);
+    if (cached) {
+      setBatch(cached.batch);
+      setIndex(0);
+      reviewedNoteIdsRef.current = new Set<string>(cached.batch.reviewedNoteIds ?? []);
+      setTagSummary(cached.tagSummary);
+      loadedTagSummaryForBatchIdRef.current = cached.batch.batchId;
+      setError(null);
+      setLoading(false);
+      void revalidateBatch();
+    } else {
       void loadBatch();
     }
-  }, [loadBatch]);
-
-  const loadTagSummary = useCallback(async (): Promise<void> => {
-    const res = await fetch("/api/tags");
-    const payload = await readJson<Tag[]>(res);
-    if (!res.ok || !payload.data) {
-      return;
-    }
-    setTagSummary(payload.data);
-  }, []);
+    return () => {
+      reviewInitialLoadDoneRef = false;
+    };
+  }, [loadBatch, revalidateBatch]);
 
   const loadTagsForCurrentNote = useCallback(async (): Promise<void> => {
     const noteId = currentItem?.note.id;
@@ -280,7 +355,8 @@ export default function ReviewPage() {
 
   // Load tag summary once when we have a batch (for edit-mode suggestions). Not on note change.
   // Dedupe by batchId so we only call once per batch (avoids double call in React Strict Mode dev).
-  const loadedTagSummaryForBatchIdRef = useRef<string | null>(null);
+  // Note: loadBatch and cache-hit path now fetch tag summary; this effect handles saveEdit path
+  // where we need to refresh tag summary after mutations.
   useEffect(() => {
     if (batch && loadedTagSummaryForBatchIdRef.current !== batch.batchId) {
       loadedTagSummaryForBatchIdRef.current = batch.batchId;
@@ -464,6 +540,8 @@ export default function ReviewPage() {
       setEditTagNames([]);
       setEditDraftFiles([]);
       setEditPendingDeleteIds([]);
+      invalidateNotesCache();
+      invalidateReviewCache();
       await Promise.all([loadTagsForCurrentNote(), loadImagesForCurrentNote(), loadTagSummary()]);
       if (imageOpFailed) {
         setError(t.errorImageUpload);
@@ -477,6 +555,8 @@ export default function ReviewPage() {
       } else {
         setError(t.errorUpdateNote);
       }
+      invalidateNotesCache();
+      invalidateReviewCache();
       await Promise.all([loadTagsForCurrentNote(), loadImagesForCurrentNote(), loadTagSummary()]);
     } finally {
       setBusy(false);
@@ -506,6 +586,8 @@ export default function ReviewPage() {
         setIndex(nextIndex);
         return { ...prev, notes: nextItems };
       });
+      invalidateNotesCache();
+      invalidateReviewCache();
       resetReviewEditState();
     } catch {
       setError(t.errorDeleteNote);
@@ -564,6 +646,7 @@ export default function ReviewPage() {
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => {
+            invalidateReviewCache();
             void loadBatch();
           }}
           disabled={busy || loading}

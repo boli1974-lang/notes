@@ -910,7 +910,7 @@ Planned improvements for future milestones:
 
 - **Goal:** Eliminate the N+1 tag query pattern so that Notes and Review receive note tags as part of the main data load.
 - **Notes:** `GET /api/notes` now returns notes with `tags: { id, name }[]` included. The Notes page populates `tagsByNote` from the list response and no longer performs per-note tag fetches on initial load. `loadTagsForNote` remains only for targeted refresh after mutations (e.g. after save).
-- **Review:** `GET /api/review/today` returns batch notes with `tags` included. On batch load and on Prev/Next navigation, the UI uses `currentItem.note.tags` from the batch; no per-note tag fetch during navigation. `loadTagsForCurrentNote` is used only as a targeted refresh fallback after mutations (e.g. after save in edit mode).
+- **Review:** `GET /api/review/today` returns batch notes with `tags` included. On batch load and on Prev/Next navigation, the UI uses `currentItem.note.tags` from the batch; no per-note tag fetch during navigation. `loadTagsForCurrentNote` remains only as a targeted refresh fallback after mutations when the local or batch state is not already the complete source of truth.
 - **Tag ordering:** Deterministic order by `tag.createdAt` desc (consistent with existing `findTagsByNoteId`). NoteTag has no attach-order column; tag creation order is used.
 - **Layering:** Prisma only in repositories; services shape data; APIs call services. No Prisma in API routes.
 
@@ -969,6 +969,7 @@ Planned improvements for future milestones:
 **Remaining slowness:**
 
 - Likely sources: (1) **Image loading** — N image list requests on Notes load and one per note on Review navigation. (2) **Batch size** — Review fetches up to 10 notes with tags in one request; that is already a single call. (3) **List size** — Notes fetches all matching notes in one request; pagination was out of scope. Improving image loading (e.g. including image list in list/batch or thumbnails) would be the next performance lever.
+- Revisit slowness also comes from page-level refetch on remount; this is deferred to Milestone 6.1 (client-side revisit cache).
 
 ### Validation complete — Milestone 6 done
 
@@ -990,7 +991,7 @@ Planned improvements for future milestones:
 
 1. **Two `/api/notes` and two `/api/review/today`:** In development, **Next.js runs React Strict Mode by default**. Strict Mode double-invokes effects (mount → unmount → mount again) to surface side-effect bugs. The effects that call `loadNotes()` and `loadBatch()` therefore run twice on initial load, so two requests each. This is **dev-only**; production does not double-invoke, so you would see one request each there.
 
-2. **Three `/api/tags` after save:** (a) The effect that runs when `batch` is truthy calls `loadTagSummary()`. Under Strict Mode that effect runs twice when the batch is first set, so **two** tag-summary requests on initial Review load. (b) After save we explicitly call `loadTagSummary()` once for a **third** request. So the “three after save” are: two from the batch effect (Strict Mode) from when the page first had a batch, plus one from the save path. There was no additional app bug (e.g. multiple paths calling `loadTagSummary` after save).
+2. **Three `/api/tags` visible around save in local dev:** (a) The effect that runs when `batch` is truthy calls `loadTagSummary()`. Under Strict Mode that effect ran twice when the batch was first set, so two tag-summary requests were already present from initial Review load. (b) After save we explicitly call `loadTagSummary()` once more. So the observed total of three requests reflected two earlier dev-only batch-effect calls plus one intentional save-path refresh, not multiple redundant save-triggered paths.
 
 **Changes made (behavior unchanged, fewer redundant requests):**
 
@@ -1004,3 +1005,96 @@ Planned improvements for future milestones:
 
 - **Dev-only duplicates:** The extra `/api/notes` and `/api/review/today` on initial load were from **React Strict Mode** (dev only), not from redundant app logic.
 - **Real redundancy reduced:** The batch-effect `loadTagSummary` was effectively firing twice in dev (Strict Mode); the save path correctly fired once. We deduped the batch-effect call by batchId and the initial load effects by refs so that in dev you see one request per intent. Behavior (when data loads, when we refresh after save) is unchanged.
+
+---
+
+## Phase 1 — Milestone 6.1: Client-side Revisit Cache
+
+### Summary
+
+Reduce perceived slowness when navigating between Notes and Review by reusing recently fetched page data for a short period (stale-while-revalidate).
+
+On revisit within TTL, cached data is rendered immediately. A background revalidation request still runs and updates state quietly on success.
+
+### What was implemented
+
+**lib/cache/revisitCache.ts** (new)
+
+Module-level in-memory cache with:
+
+- `NoteCacheEntry`
+- `ReviewCacheEntry`
+- TTL: 45 seconds
+- APIs: `getNotesCache`, `setNotesCache`, `getReviewCache`, `setReviewCache`, `invalidateNotesCache`, `invalidateReviewCache`
+
+**Notes page**
+
+- Cache keyed by `queryString`
+- Cached data: notes, tagsByNote, tagSummary, unusedTags
+- Mount behavior:
+  - Cache hit → apply cached state immediately, `loading=false`, start background revalidation
+  - Cache miss → run loadNotes
+- Render gate: `loading && notes.length === 0` — show the blocking loading screen only if we are loading and we have no notes yet. If notes already exist, the list stays visible while refresh runs.
+
+**Review page**
+
+- Cache keyed by `reviewDate` (UTC YYYY-MM-DD)
+- Cached data: review batch, tagSummary
+- Mount behavior:
+  - Cache hit → apply cached state immediately, `loading=false`, run background revalidation
+  - Cache miss → run loadBatch
+- A module-level `reviewInitialLoadDoneRef` prevents React Strict Mode double-mount behavior from triggering loadBatch and overwriting cached state.
+
+### Cache policy / behavior
+
+**Stale-while-revalidate**
+
+Cached data is shown immediately. Background requests refresh the data and overwrite state on success.
+
+**Invalidation scope**
+
+Whole-cache invalidation for simplicity.
+
+- `invalidateNotesCache()` clears all Notes cache entries
+- `invalidateReviewCache()` clears all Review cache entries
+
+**Stale response guards**
+
+- Notes: discard revalidation results if queryString changed
+- Review: discard results if the UTC review date rolled over
+- Otherwise the most recent response wins
+
+### Invalidation points
+
+**Notes cache invalidated on**
+
+- onQuickAdd
+- saveEdit (success and catch)
+- softDelete
+- undoSoftDelete
+- deleteUnusedTag
+- Also invalidated from Review mutations: saveEdit, deleteCurrentNote
+
+**Review cache invalidated on**
+
+- Refresh Batch
+- saveEdit (success and catch)
+- deleteCurrentNote
+- Also invalidated from Notes mutations
+
+### Implementation notes
+
+- Notes cache write happens before image fetches (images are not cached)
+- On cache hit, Notes image loading only happens during revalidation to avoid duplicate image requests
+- Review revalidation clamps the current index to a valid range and exits edit mode if the refreshed batch shape no longer supports the previously selected item; this is a defensive consistency safeguard, not an intended day-change UX flow.
+
+### Lessons learned
+
+- Development mode (React Strict Mode + Fast Refresh) can significantly distort perceived performance. Final UI performance validation should be done in local production mode (`npm run build` + `npm run start`).
+- Notes required a careful render gate so existing notes remain visible during background refresh.
+- Review required guarding against Strict Mode double-mount behavior that could overwrite cached state.
+
+### Manual validation (local production)
+
+- **Review → Notes → Review within TTL:** Cached Review renders immediately before revalidation finishes. ✓
+- **Notes → Review → Notes within TTL:** Cached Notes renders immediately before revalidation finishes. ✓

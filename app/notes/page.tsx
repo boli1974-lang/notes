@@ -3,6 +3,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImageViewer } from "@/components/ImageViewer";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import {
+  getNotesCache,
+  invalidateNotesCache,
+  invalidateReviewCache,
+  setNotesCache,
+} from "@/lib/cache/revisitCache";
 import { EDIT_ERROR } from "@/lib/constants/editErrorCodes";
 import { Locale, getInitialLocale, getMessages, persistLocale } from "@/lib/i18n";
 import {
@@ -177,22 +183,24 @@ export default function NotesPage() {
     }));
   }, []);
 
-  const loadTagSummary = useCallback(async (): Promise<void> => {
+  const loadTagSummary = useCallback(async (): Promise<TagWithCount[] | undefined> => {
     const res = await fetch("/api/tags?includeCounts=true");
     const payload = await readJson<TagWithCount[]>(res);
     if (!res.ok || !payload.data) {
       return;
     }
     setTagSummary(payload.data);
+    return payload.data;
   }, []);
 
-  const loadUnusedTags = useCallback(async (): Promise<void> => {
+  const loadUnusedTags = useCallback(async (): Promise<Tag[]> => {
     const res = await fetch("/api/tags/unused");
     const payload = await readJson<Tag[]>(res);
     if (!res.ok || !payload.data) {
       throw new Error(payload.error ?? getMessages(localeRef.current).notes.errorLoadUnusedTags);
     }
     setUnusedTags(payload.data);
+    return payload.data;
   }, []);
 
   const loadImagesForNote = useCallback(async (noteId: string): Promise<void> => {
@@ -218,15 +226,22 @@ export default function NotesPage() {
       }
 
       const data = payload.data;
-      setNotes(data.map((n) => ({ id: n.id, title: n.title, content: n.content, createdAt: n.createdAt })));
+      const notesData = data.map((n) => ({ id: n.id, title: n.title, content: n.content, createdAt: n.createdAt }));
+      setNotes(notesData);
       const tagsByNoteAcc: Record<string, Tag[]> = {};
       for (let i = 0; i < data.length; i++) {
         const n = data[i];
         tagsByNoteAcc[n.id] = n.tags ?? [];
       }
       setTagsByNote(tagsByNoteAcc);
+      const [tagSummaryData, unusedTagsData] = await Promise.all([loadTagSummary(), loadUnusedTags()]);
+      setNotesCache(queryString, {
+        notes: notesData,
+        tagsByNote: tagsByNoteAcc,
+        tagSummary: tagSummaryData ?? [],
+        unusedTags: unusedTagsData ?? [],
+      });
       await Promise.all(data.map((note) => loadImagesForNote(note.id)));
-      await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch (loadError) {
       if (loadError instanceof Error && loadError.message) {
         setError(loadError.message);
@@ -238,13 +253,60 @@ export default function NotesPage() {
     }
   }, [loadImagesForNote, loadTagSummary, loadUnusedTags, queryString]);
 
+  const queryStringRef = useRef(queryString);
+  useEffect(() => {
+    queryStringRef.current = queryString;
+  }, [queryString]);
+
+  const revalidateNotes = useCallback(async (): Promise<void> => {
+    const queryStringForFetch = queryString;
+    try {
+      const res = await fetch(`/api/notes?${queryStringForFetch}`);
+      const payload = await readJson<(Note & { tags?: Tag[] })[]>(res);
+      if (!res.ok || !payload.data) return;
+      if (queryStringRef.current !== queryStringForFetch) return;
+
+      const data = payload.data;
+      const notesData = data.map((n) => ({ id: n.id, title: n.title, content: n.content, createdAt: n.createdAt }));
+      const tagsByNoteAcc: Record<string, Tag[]> = {};
+      for (let i = 0; i < data.length; i++) {
+        const n = data[i];
+        tagsByNoteAcc[n.id] = n.tags ?? [];
+      }
+      setNotes(notesData);
+      setTagsByNote(tagsByNoteAcc);
+      const [tagSummaryData, unusedTagsData] = await Promise.all([loadTagSummary(), loadUnusedTags()]);
+      if (queryStringRef.current !== queryStringForFetch) return;
+      setNotesCache(queryStringForFetch, {
+        notes: notesData,
+        tagsByNote: tagsByNoteAcc,
+        tagSummary: tagSummaryData ?? [],
+        unusedTags: unusedTagsData ?? [],
+      });
+      await Promise.all(data.map((note) => loadImagesForNote(note.id)));
+    } catch {
+      // Keep current state; do not overwrite with error
+    }
+  }, [queryString, loadImagesForNote, loadTagSummary, loadUnusedTags]);
+
   const lastLoadedQueryRef = useRef<string | null>(null);
   useEffect(() => {
     if (lastLoadedQueryRef.current !== queryString) {
       lastLoadedQueryRef.current = queryString;
-      void loadNotes();
+      const cached = getNotesCache(queryString);
+      if (cached) {
+        setNotes(cached.notes);
+        setTagsByNote(cached.tagsByNote);
+        setTagSummary(cached.tagSummary);
+        setUnusedTags(cached.unusedTags);
+        setError(null);
+        setLoading(false);
+        void revalidateNotes();
+      } else {
+        void loadNotes();
+      }
     }
-  }, [loadNotes, queryString]);
+  }, [loadNotes, queryString, revalidateNotes, loadImagesForNote]);
 
   useEffect(() => {
     return () => {
@@ -377,6 +439,8 @@ export default function NotesPage() {
       setCreateTagNames([]);
       revokeDraftPreviews(createDraftFiles);
       setCreateDraftFiles([]);
+      invalidateNotesCache();
+      invalidateReviewCache();
       await loadNotes();
     } catch {
       setError(t.errorCreateNote);
@@ -509,6 +573,8 @@ export default function NotesPage() {
       setNotes((prev) =>
         prev.map((note) => (note.id === noteId ? { ...note, ...payload.data } : note)),
       );
+      invalidateNotesCache();
+      invalidateReviewCache();
       await loadImagesForNote(noteId);
       await Promise.all([loadTagsForNote(noteId), loadTagSummary(), loadUnusedTags()]);
       if (imageOpFailed) {
@@ -523,6 +589,8 @@ export default function NotesPage() {
       } else {
         setError(t.errorUpdateNote);
       }
+      invalidateNotesCache();
+      invalidateReviewCache();
       await Promise.all([
         loadNotes(),
         loadTagsForNote(noteId),
@@ -572,6 +640,8 @@ export default function NotesPage() {
         index: noteIndex >= 0 ? noteIndex : 0,
         timeoutId,
       });
+      invalidateNotesCache();
+      invalidateReviewCache();
       await Promise.all([loadTagSummary(), loadUnusedTags()]);
     } catch {
       setError(t.errorDeleteNote);
@@ -598,6 +668,8 @@ export default function NotesPage() {
       }
 
       setPendingDeletedNote(null);
+      invalidateNotesCache();
+      invalidateReviewCache();
       await loadNotes();
     } catch {
       setError(t.errorRestoreNote);
@@ -615,6 +687,8 @@ export default function NotesPage() {
       }
 
       setUnusedTags((prev) => prev.filter((tag) => tag.id !== tagId));
+      invalidateNotesCache();
+      invalidateReviewCache();
       await loadTagSummary();
     } catch {
       setError(t.errorDeleteUnusedTag);
@@ -875,8 +949,10 @@ export default function NotesPage() {
         </div>
       ) : null}
 
-      {loading ? (
-        <div className="text-sm text-slate-600">{t.loadingNotes}</div>
+      {loading && notes.length === 0 ? (
+        <div className="text-sm text-slate-600">
+          {t.loadingNotes}
+        </div>
       ) : notes.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600">
           {t.noNotesFound}
